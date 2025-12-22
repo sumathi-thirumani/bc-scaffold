@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATES_DIR="$SCRIPT_DIR/templates"
 
 # Available template types
-TEMPLATE_TYPES=("codeql" "ci" "cd" "trivy")
+TEMPLATE_TYPES=("quality" "ci" "cd" "trivy")
 
 #######################################
 # Display welcome message
@@ -44,7 +44,7 @@ show_help() {
     echo "Usage: $SCRIPT_NAME [OPTIONS] [COMMAND]"
     echo ""
     echo "Commands:"
-    echo "  codeql          List available CodeQL templates"
+    echo "  quality          List available quality templates"
     echo "  ci              List available CI templates"
     echo "  cd              List available CD templates"
     echo "  trivy           List available Trivy templates"
@@ -58,7 +58,7 @@ show_help() {
 #######################################
 # List templates in a given template folder
 # Arguments:
-#   $1 - Template type (codeql, ci, cd, trivy)
+#   $1 - Template type (quality, ci, cd, trivy)
 #######################################
 list_templates() {
     local template_type="$1"
@@ -141,7 +141,7 @@ main() {
                 show_version
                 exit 0
                 ;;
-            codeql|ci|cd|trivy)
+            quality|ci|cd|trivy)
                 show_welcome
                 list_templates "$1"
                 exit 0
@@ -159,3 +159,4 @@ main() {
 
 # Run main function
 main "$@"
+.
