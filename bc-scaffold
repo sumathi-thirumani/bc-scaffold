@@ -1,0 +1,161 @@
+#!/bin/bash
+
+#######################################
+# bc-scaffold - Git Repository Scaffolding Tool
+# Helps developers setup git repositories with best practice templates
+#######################################
+
+VERSION="0.1.0"
+SCRIPT_NAME="bc-scaffold"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATES_DIR="$SCRIPT_DIR/templates"
+
+# Available template types
+TEMPLATE_TYPES=("codeql" "ci" "cd" "trivy")
+
+#######################################
+# Display welcome message
+#######################################
+show_welcome() {
+    cat << 'EOF'
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║   ██████╗  ██████╗    ███████╗ ██████╗ █████╗ ███████╗███████╗║
+║   ██╔══██╗██╔════╝    ██╔════╝██╔════╝██╔══██╗██╔════╝██╔════╝║
+║   ██████╔╝██║         ███████╗██║     ███████║█████╗  █████╗  ║
+║   ██╔══██╗██║         ╚════██║██║     ██╔══██║██╔══╝  ██╔══╝  ║
+║   ██████╔╝╚██████╗    ███████║╚██████╗██║  ██║██║     ██║     ║
+║   ╚═════╝  ╚═════╝    ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝     ╚═╝     ║
+║                                                               ║
+║           Git Repository Scaffolding Tool                     ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+EOF
+    echo ""
+    echo "  Welcome to $SCRIPT_NAME v$VERSION"
+    echo "  Setup your git repository with best practice templates."
+    echo ""
+}
+
+#######################################
+# Display help message
+#######################################
+show_help() {
+    echo "Usage: $SCRIPT_NAME [OPTIONS] [COMMAND]"
+    echo ""
+    echo "Commands:"
+    echo "  codeql          List available CodeQL templates"
+    echo "  ci              List available CI templates"
+    echo "  cd              List available CD templates"
+    echo "  trivy           List available Trivy templates"
+    echo ""
+    echo "Options:"
+    echo "  -h, --help      Show this help message"
+    echo "  -v, --version   Show version information"
+    echo ""
+}
+
+#######################################
+# List templates in a given template folder
+# Arguments:
+#   $1 - Template type (codeql, ci, cd, trivy)
+#######################################
+list_templates() {
+    local template_type="$1"
+    local template_dir="$TEMPLATES_DIR/$template_type"
+    
+    echo ""
+    echo "  $template_type templates:"
+    echo "  ─────────────────────────"
+    
+    if [[ ! -d "$template_dir" ]]; then
+        echo "  No templates registered"
+        echo ""
+        return
+    fi
+    
+    # Find template files (exclude .gitkeep)
+    local templates=()
+    while IFS= read -r -d '' file; do
+        local filename=$(basename "$file")
+        if [[ "$filename" != ".gitkeep" ]]; then
+            # Remove file extension
+            local template_name="${filename%.*}"
+            templates+=("$template_name")
+        fi
+    done < <(find "$template_dir" -maxdepth 1 -type f -print0 2>/dev/null)
+    
+    if [[ ${#templates[@]} -eq 0 ]]; then
+        echo "  No templates registered"
+    else
+        for template in "${templates[@]}"; do
+            echo "  • $template"
+        done
+    fi
+    echo ""
+}
+
+#######################################
+# Check if a value is a valid template type
+# Arguments:
+#   $1 - Value to check
+# Returns:
+#   0 if valid, 1 if not
+#######################################
+is_valid_template_type() {
+    local value="$1"
+    for type in "${TEMPLATE_TYPES[@]}"; do
+        if [[ "$type" == "$value" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+#######################################
+# Display version
+#######################################
+show_version() {
+    echo "$SCRIPT_NAME version $VERSION"
+}
+
+#######################################
+# Main entry point
+#######################################
+main() {
+    # No arguments - show welcome message
+    if [[ $# -eq 0 ]]; then
+        show_welcome
+        show_help
+        exit 0
+    fi
+
+    # Parse command line arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--version)
+                show_version
+                exit 0
+                ;;
+            codeql|ci|cd|trivy)
+                show_welcome
+                list_templates "$1"
+                exit 0
+                ;;
+            *)
+                echo "Unknown command or option: $1"
+                echo ""
+                show_help
+                exit 1
+                ;;
+        esac
+        shift
+    done
+}
+
+# Run main function
+main "$@"
