@@ -1,0 +1,62 @@
+name: Build Ecosystem Matrix
+description: Build ecosystem scan matrix for audit and SBOM workflows.
+
+inputs:
+  # Selects audit or SBOM matrix shape.
+  mode:
+    description: Matrix mode to build.
+    required: true
+  # Repository or subdirectory to scan for ecosystem manifests.
+  path:
+    description: Path to scan.
+    required: false
+    default: .
+  # Optional audit allowlist; SBOM mode ignores unsupported filtering.
+  supported_ecosystems:
+    description: Comma-separated ecosystems supported by audit mode.
+    required: false
+    default: ''
+
+outputs:
+  # Use with strategy.matrix.
+  matrix:
+    description: Matrix JSON for GitHub Actions strategy.
+    value: ${{ steps.matrix.outputs.matrix }}
+  # Use for conditions before expanding matrix jobs.
+  matrix_count:
+    description: Number of matrix entries.
+    value: ${{ steps.matrix.outputs.matrix_count }}
+  # Detected ecosystems before mode-specific filtering.
+  detected:
+    description: Detected ecosystem names.
+    value: ${{ steps.matrix.outputs.detected }}
+  # Final selected ecosystems or SBOM scan labels.
+  targets:
+    description: Selected scan targets.
+    value: ${{ steps.matrix.outputs.targets }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build ecosystem matrix
+      id: matrix
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Delegate matrix construction to the shell helper for easier testing.
+        result_json="$(bash "$GITHUB_ACTION_PATH/build-ecosystem-matrix.sh" \
+          "${{ inputs.mode }}" \
+          "${{ inputs.path }}" \
+          "${{ inputs.supported_ecosystems }}")"
+
+        # Split the normalized payload into GitHub Actions outputs.
+        count="$(jq -r '.count' <<< "$result_json")"
+        matrix_json="$(jq -c '.matrix' <<< "$result_json")"
+        detected="$(jq -c '.detected' <<< "$result_json")"
+        targets="$(jq -c '.targets' <<< "$result_json")"
+
+        echo "matrix_count=$count" >> "$GITHUB_OUTPUT"
+        echo "matrix=$matrix_json" >> "$GITHUB_OUTPUT"
+        echo "detected=$detected" >> "$GITHUB_OUTPUT"
+        echo "targets=$targets" >> "$GITHUB_OUTPUT"

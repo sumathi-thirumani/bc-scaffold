@@ -1,0 +1,38 @@
+name: Refresh Dependency Graph
+description: Submit dependencies to GitHub Dependency Graph
+
+inputs:
+  scan_label:
+    required: true
+
+  source_dir:
+    required: true
+
+runs:
+  using: composite
+
+  steps:
+
+    - name: Normalize source directory
+      id: source
+      shell: bash
+      env:
+        SOURCE_DIR: ${{ inputs.source_dir }}
+      run: |
+        set -euo pipefail
+
+        CLEAN_DIR="${SOURCE_DIR#dir:}"
+
+        if [ ! -d "$CLEAN_DIR" ]; then
+          echo "ERROR: Directory not found: $CLEAN_DIR"
+          exit 1
+        fi
+
+        echo "clean_dir=$CLEAN_DIR" >> "$GITHUB_OUTPUT"
+        echo "Scanning: $CLEAN_DIR"
+
+    - name: Run Component Detection + Submit
+      uses: advanced-security/component-detection-dependency-submission-action@v0.1.1
+      with:
+        filePath: ${{ steps.source.outputs.clean_dir }}
+        correlator: refresh-dependency-graph-${{ inputs.scan_label }}
