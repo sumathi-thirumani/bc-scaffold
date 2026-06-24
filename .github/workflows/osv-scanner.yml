@@ -4,13 +4,10 @@ on:
   workflow_call:
     inputs:
       scan-args:
-        description: "Arguments passed to OSV scanner"
+        description: Arguments passed to OSV scanner
         required: false
         type: string
-        default: |
-          -r
-          --skip-git
-          ./
+        default: "-r --skip-git --format=sarif --output=osv-scanner-results.sarif ./"
 
 permissions:
   contents: read
@@ -28,3 +25,17 @@ jobs:
         uses: google/osv-scanner-action/osv-scanner-action@v1.7.1
         with:
           scan-args: ${{ inputs.scan-args }}
+
+      - name: Check SARIF exists
+        if: always()
+        id: sarif
+        run: |
+          if [ -f osv-scanner-results.sarif ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload OSV Scanner results
+        if: always() && steps.sarif.outputs.exists == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: osv-scanner-results.sarif
