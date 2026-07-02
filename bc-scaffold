@@ -77,7 +77,8 @@ list_templates() {
     # Find template files (exclude .gitkeep)
     local templates=()
     while IFS= read -r -d '' file; do
-        local filename=$(basename "$file")
+        local filename
+        filename=$(basename "$file")
         if [[ "$filename" != ".gitkeep" ]]; then
             # Remove file extension
             local template_name="${filename%.*}"
