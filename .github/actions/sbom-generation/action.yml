@@ -1,5 +1,5 @@
 name: SBOM
-description: Generate and normalize CycloneDX and SPDX SBOMs.
+description: Generate and normalize a CycloneDX SBOM.
 
 inputs:
   source:
@@ -28,10 +28,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        # Base timestamps on the last commit so reruns produce stable metadata.
         epoch="$(git log -1 --pretty=%ct 2>/dev/null || date +%s)"
         created_at="$(date -u -d "@$epoch" +"%Y-%m-%dT%H:%M:%SZ")"
-        # Derive a deterministic CycloneDX serial from repo, commit, and target.
         hash="$(printf '%s' "${{ github.repository }}@${{ github.sha }}@${{ inputs.scan_label }}" | sha256sum | awk '{print $1}')"
         serial="urn:uuid:${hash:0:8}-${hash:8:4}-${hash:12:4}-${hash:16:4}-${hash:20:12}"
         echo "source_date_epoch=$epoch" >> "$GITHUB_OUTPUT"
@@ -44,13 +42,13 @@ runs:
         SOURCE_DATE_EPOCH: ${{ steps.deterministic.outputs.source_date_epoch }}
       run: |
         set -euo pipefail
-        bash "$GITHUB_ACTION_PATH/generate-sbom.sh" "${{ inputs.source }}" "${{ inputs.output_prefix }}"
+        mkdir -p "$(dirname "${{ inputs.output_prefix }}")"
+        bash "$GITHUB_ACTION_PATH/generate-sbom-cyclonedx.sh" "${{ inputs.source }}" "${{ inputs.output_prefix }}"
 
     - name: Normalize SBOM
       shell: bash
       run: |
         set -euo pipefail
-        # Normalize CycloneDX fields that otherwise vary between workflow runs.
         bash "$GITHUB_ACTION_PATH/normalize-sbom.sh" \
           "${{ inputs.output_prefix }}" \
           "${{ steps.deterministic.outputs.created_at }}" \

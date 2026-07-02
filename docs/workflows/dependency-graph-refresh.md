@@ -6,8 +6,8 @@
 
 1. Checks out the repository.
 2. Builds a scan matrix from the configured `source_path`.
-3. Generates a CycloneDX SBOM for each matrix entry with Syft.
-4. Converts the generated CycloneDX SBOM to SPDX JSON 2.2 with Syft.
+3. Generates CycloneDX and SPDX JSON SBOM files for each matrix entry.
+4. Uses installed-environment CycloneDX generation for Python projects with `poetry.lock`, `requirements.txt`, or `[tool.poetry]`; all other targets use Syft directly.
 5. Optionally uploads generated SBOM files as workflow artifacts.
 6. Submits dependency information to the GitHub Dependency Graph for each matrix entry.
 
@@ -27,7 +27,7 @@ The workflow supports two entry points:
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `source_path` | No | `.` | Repository path or subdirectory to scan for ecosystem manifests. |
-| `syft_version` | No | `v1.45.0` | Syft version used to generate deterministic CycloneDX and SPDX SBOM output. |
+| `syft_version` | No | `v1.45.0` | Syft version used for filesystem SBOM generation and SPDX output. |
 | `upload_artifacts` | No | `true` | Whether generated SBOM files are uploaded as workflow artifacts. |
 | `artifact_prefix` | No | `sbom` | Prefix used for uploaded artifact names. |
 | `artifact_retention_days` | No | `30` | Retention period for uploaded SBOM artifacts. |
@@ -71,6 +71,21 @@ Each matrix entry uses `dir:<manifest-directory>` as the Syft source and a stabl
 ```text
 filesystem-<ecosystems>-<relative-path>
 ```
+
+## SBOM generation
+
+The `generate-sbom` job runs the SBOM composite action once per matrix entry. The action installs the configured Syft version, derives deterministic CycloneDX metadata from the latest commit timestamp and `repository@sha@scan_label`, then writes:
+
+```text
+<matrix.output_prefix>.cyclonedx.json
+<matrix.output_prefix>.spdx.json
+```
+
+For non-Python targets, Syft generates both files directly from `matrix.source`.
+
+For Python targets with `poetry.lock`, `requirements.txt`, or `[tool.poetry]`, the generator creates temporary virtual environments, installs the project dependencies, generates CycloneDX from the installed Python environment, verifies that the CycloneDX file contains components, and generates SPDX JSON with Syft from the project directory.
+
+After generation, the action normalizes only the CycloneDX file by sorting JSON keys and setting deterministic `metadata.timestamp` and `serialNumber` values.
 
 ## Artifact naming
 
@@ -129,6 +144,8 @@ Use the `workflow_dispatch` trigger to run this workflow directly from the GitHu
 
 ## Notes
 
-- SBOM generation is ecosystem-agnostic. CycloneDX is generated from the filesystem source, and SPDX is generated from that CycloneDX SBOM so Python dependency metadata is preserved.
+- SBOM generation usually uses Syft directly, with a Python-specific path that generates CycloneDX from an installed dependency environment.
+- SPDX output is generated with Syft directly and is not converted from CycloneDX.
+- Deterministic metadata normalization currently applies to the CycloneDX output only.
 - The dependency graph refresh step runs in a matrix and submits each scan target with a distinct correlator.
 - Matrix detection is handled before fan-out because GitHub Actions requires matrix values to be known before matrix jobs start.
