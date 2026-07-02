@@ -1,14 +1,15 @@
 # Dependency Graph Refresh Workflow
 
-`dependency-graph-refresh.yml` is a reusable GitHub Actions workflow that generates SBOMs and refreshes the GitHub Dependency Graph for detected ecosystem directories.
+`dependency-graph-refresh.yml` is a reusable GitHub Actions workflow that generates SBOMs and refreshes the GitHub Dependency Graph for detected ecosystem directories. It can also be run manually to test SBOM generation for a repository path.
 
 ## What it does
 
 1. Checks out the repository.
 2. Builds a scan matrix from the configured `source_path`.
-3. Generates CycloneDX and SPDX SBOM files for each matrix entry using Syft.
-4. Optionally uploads generated SBOM files as workflow artifacts.
-5. Submits dependency information to the GitHub Dependency Graph for each matrix entry.
+3. Generates a CycloneDX SBOM for each matrix entry with Syft.
+4. Converts the generated CycloneDX SBOM to SPDX JSON 2.2 with Syft.
+5. Optionally uploads generated SBOM files as workflow artifacts.
+6. Submits dependency information to the GitHub Dependency Graph for each matrix entry.
 
 The SBOM generation and dependency graph refresh jobs both run as matrix jobs. Each selected target is processed independently with its own `scan_label`, `source`, and `output_prefix`.
 
@@ -18,7 +19,7 @@ The workflow supports two entry points:
 
 | Trigger | Purpose |
 | --- | --- |
-| `workflow_call` | Allows other workflows to reuse this workflow. |
+| `workflow_call` | Allows other workflows in the same repository to reuse this workflow. |
 | `workflow_dispatch` | Allows manual runs for testing or one-off refreshes. |
 
 ## Inputs
@@ -26,7 +27,7 @@ The workflow supports two entry points:
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `source_path` | No | `.` | Repository path or subdirectory to scan for ecosystem manifests. |
-| `syft_version` | No | `v1.45.0` | Syft version used to generate deterministic SBOM output. |
+| `syft_version` | No | `v1.45.0` | Syft version used to generate deterministic CycloneDX and SPDX SBOM output. |
 | `upload_artifacts` | No | `true` | Whether generated SBOM files are uploaded as workflow artifacts. |
 | `artifact_prefix` | No | `sbom` | Prefix used for uploaded artifact names. |
 | `artifact_retention_days` | No | `30` | Retention period for uploaded SBOM artifacts. |
@@ -50,7 +51,26 @@ This is needed for repository checkout and dependency graph snapshot submission.
 | `generate-sbom` | Runs once per matrix entry and generates `.cyclonedx.json` and `.spdx.json` SBOM files. |
 | `refresh-dependency-graph` | Runs once per matrix entry and submits dependency data to GitHub Dependency Graph. |
 
-If no scan targets are detected, the matrix jobs are skipped.
+If no ecosystem manifests are detected, the matrix falls back to one generic filesystem scan for `source_path`.
+
+## Scan target detection
+
+The matrix builder scans `source_path` for package manifests and groups findings by manifest directory. Generated, vendored, cached, and workflow-only folders such as `.git`, `.github`, `node_modules`, `vendor`, `venv`, `.venv`, `dist`, and `build` are skipped.
+
+Detected ecosystems include:
+
+| Ecosystem | Manifest examples |
+| --- | --- |
+| `node` | `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `package.json` |
+| `python` | `requirements*.txt`, `pyproject.toml`, `poetry.lock`, `Pipfile.lock`, `setup.py` |
+| `java` | `pom.xml`, `build.gradle`, `build.gradle.kts`, `settings.gradle`, `settings.gradle.kts` |
+| `dotnet` | `*.sln`, `*.csproj`, `*.fsproj`, `*.vbproj`, `Directory.Packages.props` |
+
+Each matrix entry uses `dir:<manifest-directory>` as the Syft source and a stable label in this shape:
+
+```text
+filesystem-<ecosystems>-<relative-path>
+```
 
 ## Artifact naming
 
@@ -89,12 +109,26 @@ jobs:
       artifact_retention_days: 30
 ```
 
+## Local action references
+
+The workflow currently calls the composite actions from this repository with a hardcoded repository and branch reference:
+
+```yaml
+uses: sumathi-thirumani/bc-scaffold/.github/actions/<action-name>@feature/security-vulnerability-capture
+```
+
+For a workflow that lives in the same repository as these composite actions, prefer local action paths so the workflow uses the checked-out revision from the current run:
+
+```yaml
+uses: ./.github/actions/<action-name>
+```
+
 ## Manual run
 
 Use the `workflow_dispatch` trigger to run this workflow directly from the GitHub Actions UI. Override `source_path` to test a specific subdirectory without changing caller workflows.
 
 ## Notes
 
-- SBOM generation is ecosystem-agnostic and uses Syft for both CycloneDX and SPDX output.
+- SBOM generation is ecosystem-agnostic. CycloneDX is generated from the filesystem source, and SPDX is generated from that CycloneDX SBOM so Python dependency metadata is preserved.
 - The dependency graph refresh step runs in a matrix and submits each scan target with a distinct correlator.
 - Matrix detection is handled before fan-out because GitHub Actions requires matrix values to be known before matrix jobs start.

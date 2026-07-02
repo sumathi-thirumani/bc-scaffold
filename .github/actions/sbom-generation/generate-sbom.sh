@@ -28,16 +28,16 @@ generate_cyclonedx_sbom() {
 }
 
 generate_spdx_sbom() {
-	local source="$1"
+	local cyclonedx_file="$1"
 
-	log "Generating SPDX JSON 2.2 SBOM with Syft"
+	log "Generating SPDX JSON 2.2 SBOM from CycloneDX SBOM with Syft"
 
-	syft "$source" \
+	syft convert "$cyclonedx_file" \
 		--output "spdx-json@2.2=${OUTPUT_PREFIX}.spdx.json"
 }
 
 generate_cyclonedx_sbom "$SOURCE"
-generate_spdx_sbom "$SOURCE"
+generate_spdx_sbom "${OUTPUT_PREFIX}.cyclonedx.json"
 
 log "SBOM generation completed"
 
