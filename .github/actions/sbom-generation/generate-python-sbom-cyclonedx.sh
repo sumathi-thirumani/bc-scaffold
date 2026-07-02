@@ -54,6 +54,41 @@ PY
   log "SBOM contains $component_count components"
 }
 
+verify_spdx() {
+  local sbom_file="$1"
+  local python_bin="$2"
+
+  [ -f "$sbom_file" ] || die "SPDX output missing: $sbom_file"
+
+  local package_count
+  package_count="$("$python_bin" - "$sbom_file" <<'PY'
+import json, sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+
+print(len(data.get("packages") or []))
+PY
+)"
+
+  if [ "$package_count" -eq 0 ]; then
+    die "SPDX SBOM contains zero packages: $sbom_file"
+  fi
+
+  log "SPDX SBOM contains $package_count packages"
+}
+
+site_packages_dir() {
+  local python_bin="$1"
+
+  "$python_bin" - <<'PY'
+import site
+
+paths = site.getsitepackages()
+print(paths[0] if paths else "")
+PY
+}
+
 [ -d "$PROJECT_DIR" ] || die "Project directory does not exist: $PROJECT_DIR"
 
 mkdir -p "$(dirname "$OUTPUT_PREFIX")"
@@ -130,11 +165,16 @@ fi
 
 log "Generating SPDX SBOM for dependency graph submission"
 
-syft "dir:." \
+SITE_PACKAGES="$(site_packages_dir "$PROJECT_PYTHON")"
+[ -n "$SITE_PACKAGES" ] || die "Could not resolve Python site-packages directory"
+[ -d "$SITE_PACKAGES" ] || die "Python site-packages directory does not exist: $SITE_PACKAGES"
+
+syft "dir:$SITE_PACKAGES" \
   --output "spdx-json=$SPDX_FILE"
 
 popd >/dev/null
 
 verify_sbom "$OUTPUT_FILE" "$TOOL_PYTHON"
+verify_spdx "$SPDX_FILE" "$TOOL_PYTHON"
 
 log "SBOM written to: $OUTPUT_FILE"

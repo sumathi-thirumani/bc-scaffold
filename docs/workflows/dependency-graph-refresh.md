@@ -83,7 +83,7 @@ The `generate-sbom` job runs the SBOM composite action once per matrix entry. Th
 
 For non-Python targets, Syft generates both files directly from `matrix.source`.
 
-For Python targets with `poetry.lock`, `requirements.txt`, or `[tool.poetry]`, the generator creates temporary virtual environments, installs the project dependencies, generates CycloneDX from the installed Python environment, verifies that the CycloneDX file contains components, and generates SPDX JSON with Syft from the project directory.
+For Python targets with `poetry.lock`, `requirements.txt`, or `[tool.poetry]`, the generator creates temporary virtual environments, installs the project dependencies, generates CycloneDX from the installed Python environment, then generates SPDX JSON with Syft from that environment's `site-packages` directory. Both generated files are verified to contain dependency entries.
 
 After generation, the action normalizes only the CycloneDX file by sorting JSON keys and setting deterministic `metadata.timestamp` and `serialNumber` values.
 
