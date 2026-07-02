@@ -129,7 +129,7 @@ jobs:
 The workflow currently calls the composite actions from this repository with a hardcoded repository and branch reference:
 
 ```yaml
-uses: sumathi-thirumani/bc-scaffold/.github/actions/<action-name>@feature/security-remediation
+uses: bcgov/bc-scaffold/.github/actions/<action-name>@feature/security-remediation
 ```
 
 For a workflow that lives in the same repository as these composite actions, prefer local action paths so the workflow uses the checked-out revision from the current run:
