@@ -1,0 +1,57 @@
+name: SBOM
+description: Generate and normalize CycloneDX and SPDX SBOMs.
+
+inputs:
+  source:
+    description: Syft source, for example dir:.
+    required: true
+  output_prefix:
+    description: Output file prefix without extension.
+    required: true
+  syft_version:
+    description: Pinned Syft version.
+    required: true
+  scan_label:
+    description: Label used to create deterministic serial values per scan.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Syft
+      uses: anchore/sbom-action/download-syft@v0
+      with:
+        syft-version: ${{ inputs.syft_version }}
+
+    - name: Prepare deterministic metadata
+      id: deterministic
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Base timestamps on the last commit so reruns produce stable metadata.
+        epoch="$(git log -1 --pretty=%ct 2>/dev/null || date +%s)"
+        created_at="$(date -u -d "@$epoch" +"%Y-%m-%dT%H:%M:%SZ")"
+        # Derive a deterministic CycloneDX serial from repo, commit, and target.
+        hash="$(printf '%s' "${{ github.repository }}@${{ github.sha }}@${{ inputs.scan_label }}" | sha256sum | awk '{print $1}')"
+        serial="urn:uuid:${hash:0:8}-${hash:8:4}-${hash:12:4}-${hash:16:4}-${hash:20:12}"
+        echo "source_date_epoch=$epoch" >> "$GITHUB_OUTPUT"
+        echo "created_at=$created_at" >> "$GITHUB_OUTPUT"
+        echo "serial=$serial" >> "$GITHUB_OUTPUT"
+
+    - name: Generate SBOM
+      shell: bash
+      env:
+        SOURCE_DATE_EPOCH: ${{ steps.deterministic.outputs.source_date_epoch }}
+      run: |
+        set -euo pipefail
+        bash "$GITHUB_ACTION_PATH/generate-sbom.sh" "${{ inputs.source }}" "${{ inputs.output_prefix }}"
+
+    - name: Normalize SBOM
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Normalize CycloneDX fields that otherwise vary between workflow runs.
+        bash "$GITHUB_ACTION_PATH/normalize-sbom.sh" \
+          "${{ inputs.output_prefix }}" \
+          "${{ steps.deterministic.outputs.created_at }}" \
+          "${{ steps.deterministic.outputs.serial }}"
