@@ -13,6 +13,6 @@ permissions:
    
 jobs:
   generate-sbom:
-    uses: bcgov/bc-scaffold/.github/workflows/dependency-graph-refresh.yml@feature/security-remediation
+    uses: sumathi-thirumani/bc-scaffold/.github/workflows/dependency-graph-refresh.yml@feature/security-remediation
     with:
       artifact_retention_days: 3
