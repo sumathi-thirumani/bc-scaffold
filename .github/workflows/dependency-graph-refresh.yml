@@ -92,8 +92,9 @@ jobs:
       - name: Build scan matrix
         id: matrix
         uses: sumathi-thirumani/bc-scaffold/.github/actions/build-ecosystem-matrix@feature/security-remediation
+        with:
           # Detect ecosystem manifests, skip generated/vendor folders, and emit
-          # one matrix entry for each filesystem SBOM target.
+          # one matrix entry for each filesystem SBOM target.       
           mode: sbom
           path: ${{ steps.cfg.outputs.source_path }}
 
