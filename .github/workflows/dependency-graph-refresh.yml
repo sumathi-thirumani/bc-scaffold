@@ -91,8 +91,7 @@ jobs:
 
       - name: Build scan matrix
         id: matrix
-        uses: sumathi-thirumani/bc-scaffold/.github/actions/build-ecosystem-matrix@feature/security-vulnerability-capture
-        with:
+        uses: sumathi-thirumani/bc-scaffold/.github/actions/build-ecosystem-matrix@feature/security-remediation
           # Detect ecosystem manifests, skip generated/vendor folders, and emit
           # one matrix entry for each filesystem SBOM target.
           mode: sbom
@@ -135,7 +134,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run SBOM core action
-        uses: sumathi-thirumani/bc-scaffold/.github/actions/sbom-generation@feature/security-vulnerability-capture
+        uses: sumathi-thirumani/bc-scaffold/.github/actions/sbom-generation@feature/security-remediation
         with:
           # Generate the CycloneDX inventory used by security/compliance tooling.
           source: ${{ matrix.source }}
@@ -186,7 +185,7 @@ jobs:
           fetch-depth: 0
 
       - name: Refresh GitHub Dependency Graph
-        uses: sumathi-thirumani/bc-scaffold/.github/actions/refresh-dependency-graph@feature/security-vulnerability-capture
+        uses: sumathi-thirumani/bc-scaffold/.github/actions/refresh-dependency-graph@feature/security-remediation
         with:
           scan_label: ${{ matrix.scan_label }}
           source_dir: ${{ matrix.source }}
