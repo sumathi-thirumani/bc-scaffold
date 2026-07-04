@@ -63,6 +63,7 @@ def make_direct_pkg() -> SecurityPackageTriage:
                 ghsa_id="GHSA-demo",
                 first_patched="2.0.0",
                 vulnerable_range="<2.0.0",
+                relationship="direct",
             )
         ],
     )
@@ -115,6 +116,27 @@ def test_fix_direction_without_existing_pr_creates_placeholder_plan() -> None:
     assert "Fixed: >=2.0.0" in plan.action.placeholder_markdown
     assert "Is Breaking Dependency: No" in plan.action.placeholder_markdown
     assert "Advisories:\n- GHSA-demo" in plan.action.placeholder_markdown
+
+
+def test_direct_placeholder_uses_alert_relationship_when_not_transitive() -> None:
+    pkg = make_direct_pkg()
+    pkg.vulnerabilities[0].relationship = "direct"
+
+    plan = build_direct_plan(pkg)
+
+    assert plan.package.relationship == "direct"
+    assert "Type: direct" in plan.action.placeholder_markdown
+
+
+def test_placeholder_does_not_mark_indirect_alert_as_direct() -> None:
+    pkg = make_direct_pkg()
+    pkg.vulnerabilities[0].relationship = "indirect"
+
+    plan = build_direct_plan(pkg)
+
+    assert plan.package.relationship == "indirect"
+    assert "Type: indirect" in plan.action.placeholder_markdown
+    assert "Type: direct" not in plan.action.placeholder_markdown
 
 
 def test_critical_transitive_fix_direction_without_pr_creates_placeholder_plan() -> None:
