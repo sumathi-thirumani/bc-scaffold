@@ -371,12 +371,18 @@ def find_undershooting_pr(
 # ── Markdown builders ─────────────────────────────────────────────────────────
 
 def build_dependency_path_lines(pkg: SecurityPackageTriage) -> str:
-    if not pkg.transitive_source_package:
+    sources = dependency_path_sources(pkg)
+    if not sources:
         return "- —"
 
     return "\n".join(
-        f"- {source} → {pkg.package}" for source in pkg.transitive_source_package
+        f"- {source} → {pkg.package}" for source in sources
     )
+
+
+def dependency_path_sources(pkg: SecurityPackageTriage) -> list[str]:
+    """Use the same source field as the reference planner's source candidates."""
+    return list(dict.fromkeys(pkg.transitive_source_package))
 
 
 def build_advisory_lines(ghsas: list[str]) -> str:
