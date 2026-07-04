@@ -465,6 +465,7 @@ def build_placeholder_markdown(
 ) -> str:
     """Produce the compact markdown block written to plan.md."""
     breaking = fix_class in (FixClass.BREAKING_BUMP, FixClass.PARTIAL_FIX_AVAILABLE)
+    relationship = FixClassifier.derive_relationship(pkg)
     target = (
         pkg.breaking_upgrade_version
         or pkg.non_breaking_upgrade_version
@@ -474,7 +475,7 @@ def build_placeholder_markdown(
 
     return build_plan_markdown(
         pkg=pkg,
-        relationship="direct",
+        relationship=relationship,
         fixed_version=target,
         breaking=breaking,
         ghsas=ghsas,
