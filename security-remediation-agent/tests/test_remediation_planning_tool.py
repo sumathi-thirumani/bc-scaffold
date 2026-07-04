@@ -74,6 +74,7 @@ def make_transitive_pkg(*, remediated_version: str = TRANSITIVE_FIX_VERSION) -> 
     return SecurityPackageTriage(
         package=TRANSITIVE_PACKAGE,
         ecosystem=ECOSYSTEM,
+        severity="critical",
         current_version_range=TRANSITIVE_RANGE,
         remediated_version=remediated_version,
         istransitive=True,
