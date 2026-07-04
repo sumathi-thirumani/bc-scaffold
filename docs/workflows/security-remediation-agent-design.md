@@ -75,7 +75,7 @@ flowchart TB
 The workflow step named `Run security orchestrator` calls the Python entrypoint with the caller repository identity:
 
 ```bash
-python ./octo-gha-tools/security-remediation-agent/main.py \
+python ./bc-scaffold/security-remediation-agent/main.py \
   --owner "${GITHUB_REPOSITORY_OWNER}" \
   --repo  "${GITHUB_REPOSITORY#*/}" \
   > orchestrator-output.json
