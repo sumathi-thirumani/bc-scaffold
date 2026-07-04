@@ -37,6 +37,7 @@ def make_alert(
     first_patched: str,
     vulnerable_range: str,
     relationship: str = "",
+    manifest_path: str = "",
 ) -> VulnerabilityAlert:
     return VulnerabilityAlert(
         package=package,
@@ -46,6 +47,7 @@ def make_alert(
         first_patched=first_patched,
         vulnerable_range=vulnerable_range,
         relationship=relationship,
+        manifest_path=manifest_path,
     )
 
 
@@ -152,6 +154,17 @@ def test_critical_transitive_fix_direction_without_pr_creates_placeholder_plan()
     assert "Is Breaking Dependency: No" in plan.action.placeholder_markdown
     assert f"Dependency paths:\n- {TRANSITIVE_SOURCE} → form-data" in plan.action.placeholder_markdown
     assert "Advisories:\n- GHSA-form-data" in plan.action.placeholder_markdown
+
+
+def test_transitive_placeholder_uses_manifest_path_when_source_package_is_missing() -> None:
+    pkg = make_transitive_pkg()
+    pkg.transitive_source_package = []
+    pkg.vulnerabilities[0].manifest_path = "package-lock.json"
+
+    markdown = build_transitive_plan(pkg).action.placeholder_markdown
+
+    assert "Dependency paths:\n- package-lock.json → form-data" in markdown
+    assert "- —" not in markdown
 
 
 def test_transitive_triage_does_not_override_alert_remediated_version() -> None:
