@@ -2,8 +2,8 @@ import re
 from typing import Any
 
 from ...models.security_package_triage import SecurityPackageTriage
-from ...tools.github_vulnerability_collector.model.vulnerability_alert import VulnerabilityAlert
 from ...tools.github_sbom_analyzer.sbom_analysis_tool import sbom_analysis_tool
+from ...tools.github_vulnerability_collector.model.vulnerability_alert import VulnerabilityAlert
 
 
 class PackageRelationshipLookup:

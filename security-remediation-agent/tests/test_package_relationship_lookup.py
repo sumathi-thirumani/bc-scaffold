@@ -7,8 +7,8 @@ sys.modules.setdefault(
     types.SimpleNamespace(sbom_analysis_tool=types.SimpleNamespace(ainvoke=None)),
 )
 
-from src.engines.policy_engine.package_relationship_lookup import PackageRelationshipLookup
-from src.models.security_package_triage import SecurityPackageTriage
+from src.engines.policy_engine.package_relationship_lookup import PackageRelationshipLookup  # noqa: E402
+from src.models.security_package_triage import SecurityPackageTriage  # noqa: E402
 
 
 def test_packages_from_result_accepts_data_list() -> None:
