@@ -410,7 +410,13 @@ def build_ac_line(
     chain, and every CVE/GHSA the bump closes — all on one line.
     """
     change_tag = "BREAKING" if breaking else "non-breaking"
-    rel_tag = f"transitive fix for `{via}`" if relationship == "transitive" and via else "direct"
+    rel_tag = (
+        f"transitive fix for `{via}`"
+        if relationship == "transitive" and via
+        else "transitive"
+        if relationship == "transitive"
+        else "direct"
+    )
     ghsa_str = ", ".join(ghsas) if ghsas else "none"
     target_str = target_version or "no known fix"
     pr_str = f"; {pr_ref}" if pr_ref else ""
@@ -572,13 +578,14 @@ def build_placeholder_markdown(
         or pkg.upgrade_version
         or pkg.remediated_version
     )
+    relationship = FixClassifier.derive_relationship(pkg) or "unknown"
 
     ac_line = build_ac_line(
         target_package=pkg.package,
         current_version_range=pkg.current_version_range,
         target_version=target,
         breaking=breaking,
-        relationship="direct",
+        relationship=relationship,
         ghsas=ghsas,
     )
 
@@ -593,7 +600,7 @@ def build_placeholder_markdown(
 | Ecosystem | `{pkg.ecosystem}` |
 | Current range | `{pkg.current_version_range}` |
 | Target version | `{target or "—"}` |
-| Relationship | direct |
+| Relationship | {relationship} |
 | Breaking change | {"Yes" if breaking else "No"} |
 | GHSAs | {", ".join(ghsas) if ghsas else "—"} |
 

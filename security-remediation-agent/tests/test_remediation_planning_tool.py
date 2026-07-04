@@ -137,3 +137,14 @@ def test_transitive_triage_preserves_patched_vulnerable_package_version() -> Non
 
     assert pkg.remediated_version == TRANSITIVE_FIX_VERSION
     assert pkg.upgrade_version == ""
+
+
+def test_indirect_alert_placeholder_is_not_marked_direct() -> None:
+    pkg = make_direct_pkg()
+    pkg.vulnerabilities[0].relationship = "indirect"
+
+    plan = build_direct_plan(pkg)
+
+    assert plan.package.relationship == "transitive"
+    assert "[non-breaking, direct]" not in plan.action.placeholder_markdown
+    assert "| Relationship | transitive |" in plan.action.placeholder_markdown

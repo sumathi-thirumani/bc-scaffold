@@ -70,8 +70,13 @@ class FixClassifier:
     def derive_relationship(pkg: SecurityPackageTriage) -> str:
         if pkg.istransitive:
             return "transitive"
-        if any(vulnerability.relationship.lower() == "direct" for vulnerability in pkg.vulnerabilities):
+        relationships = [
+            vulnerability.relationship.lower()
+            for vulnerability in pkg.vulnerabilities
+            if vulnerability.relationship
+        ]
+        if any(relationship == "indirect" for relationship in relationships):
+            return "transitive"
+        if any(relationship == "direct" for relationship in relationships):
             return "direct"
-        if pkg.vulnerabilities:
-            return pkg.vulnerabilities[0].relationship
         return "unknown"
