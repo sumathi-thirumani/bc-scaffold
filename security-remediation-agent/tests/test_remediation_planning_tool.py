@@ -156,14 +156,16 @@ def test_critical_transitive_fix_direction_without_pr_creates_placeholder_plan()
     assert "Advisories:\n- GHSA-form-data" in plan.action.placeholder_markdown
 
 
-def test_transitive_placeholder_uses_manifest_path_when_source_package_is_missing() -> None:
+def test_transitive_placeholder_preserves_multiple_dependency_sources() -> None:
     pkg = make_transitive_pkg()
-    pkg.transitive_source_package = []
-    pkg.vulnerabilities[0].manifest_path = "package-lock.json"
+    pkg.package = "launch-editor"
+    pkg.transitive_source_package = ["tar@7.5.15", "some-parent@1.0.0"]
 
     markdown = build_transitive_plan(pkg).action.placeholder_markdown
 
-    assert "Dependency paths:\n- package-lock.json → form-data" in markdown
+    assert "Dependency paths:" in markdown
+    assert "- tar@7.5.15 → launch-editor" in markdown
+    assert "- some-parent@1.0.0 → launch-editor" in markdown
     assert "- —" not in markdown
 
 

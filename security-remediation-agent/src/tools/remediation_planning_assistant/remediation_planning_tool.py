@@ -371,16 +371,11 @@ def find_undershooting_pr(
 # ── Markdown builders ─────────────────────────────────────────────────────────
 
 def build_dependency_path_lines(pkg: SecurityPackageTriage) -> str:
-    sources = pkg.transitive_source_package or [
-        alert.manifest_path
-        for alert in pkg.vulnerabilities
-        if getattr(alert, "manifest_path", "")
-    ]
-    if not sources:
+    if not pkg.transitive_source_package:
         return "- —"
 
     return "\n".join(
-        f"- {source} → {pkg.package}" for source in dict.fromkeys(sources)
+        f"- {source} → {pkg.package}" for source in pkg.transitive_source_package
     )
 
 
