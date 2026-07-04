@@ -368,35 +368,48 @@ def find_undershooting_pr(
     return None, ""
 
 
-# ── AC line builder ───────────────────────────────────────────────────────────
+# ── Markdown builders ─────────────────────────────────────────────────────────
 
-def build_ac_line(
-    *,
-    target_package: str,
-    current_version_range: str,
-    target_version: str | None,
-    breaking: bool,
-    relationship: str,            # "direct" | "transitive"
-    ghsas: list[str],
-    via: str | None = None,       # vulnerable child package, for transitive AC lines
-    pr_ref: str | None = None,    # e.g. "existing PR #123 insufficient (reaches `1.2.0`)"
-) -> str:
-    """
-    Produce one terse, parseable acceptance-criteria line summarizing exactly
-    what needs to change. Designed to double as an LLM coding-agent prompt:
-    package, current→target version, breaking flag, direct/transitive +
-    chain, and every CVE/GHSA the bump closes — all on one line.
-    """
-    change_tag = "BREAKING" if breaking else "non-breaking"
-    rel_tag = f"transitive fix for `{via}`" if relationship == "transitive" and via else "direct"
-    ghsa_str = ", ".join(ghsas) if ghsas else "none"
-    target_str = target_version or "no known fix"
-    pr_str = f"; {pr_ref}" if pr_ref else ""
+def build_dependency_path_lines(pkg: SecurityPackageTriage) -> str:
+    if not pkg.transitive_source_package:
+        return "- —"
 
-    return (
-        f"Bump `{target_package}` `{current_version_range}` → `{target_str}` "
-        f"[{change_tag}, {rel_tag}] — closes {ghsa_str}{pr_str}"
+    return "\n".join(
+        f"- {source} → {pkg.package}" for source in pkg.transitive_source_package
     )
+
+
+def build_advisory_lines(ghsas: list[str]) -> str:
+    if not ghsas:
+        return "- —"
+
+    return "\n".join(f"- {ghsa}" for ghsa in ghsas)
+
+
+def build_plan_markdown(
+    *,
+    pkg: SecurityPackageTriage,
+    relationship: str,
+    fixed_version: str | None,
+    breaking: bool,
+    ghsas: list[str],
+) -> str:
+    fixed = f">={fixed_version}" if fixed_version else "—"
+
+    return f"""## {pkg.package}
+
+Package: {pkg.package}
+Type: {relationship}
+Affected: {pkg.current_version_range or "—"}
+Fixed: {fixed}
+Is Breaking Dependency: {"Yes" if breaking else "No"}
+
+Dependency paths:
+{build_dependency_path_lines(pkg)}
+
+Advisories:
+{build_advisory_lines(ghsas)}
+"""
 
 
 # ── Content builders ──────────────────────────────────────────────────────────
@@ -409,69 +422,14 @@ def build_transitive_placeholder_markdown(
     source_required_version: str,
     undershooting_pr: PullRequestMetadata | None,
 ) -> str:
-    """
-    BUG-4 + BUG-5 FIX: produce a placeholder_pr markdown (not open_issue) when
-    the source package has a known fix version, and include full transitive
-    chain context — child package, affected version range, GHSAs, and a note
-    about any existing PR that falls short.
-
-    The body now leads with a single crisp `- [ ] **AC:**` line (built via
-    build_ac_line()) that captures the full fix spec — package, current→target
-    version, breaking flag, transitive chain, and every closed GHSA/CVE — in
-    one line. This line is what the workflow's severity-level placeholder PR
-    extracts directly, and it's terse enough to use as an LLM coding-agent
-    prompt on its own. The table below it is kept only as supplementary
-    human-readable context.
-    """
-    sources_str = ", ".join(pkg.transitive_source_package)
-
-    pr_ref = None
-    if undershooting_pr:
-        _, to_ver = find_undershooting_pr(pkg, source_package)
-        pr_ref = f"existing PR #{undershooting_pr.pr_number} insufficient (reaches `{to_ver}`)"
-
-    ac_line = build_ac_line(
-        target_package=source_package,
-        current_version_range=pkg.current_version_range,
-        target_version=source_required_version,
-        breaking=False,
+    """Produce the compact markdown block written to plan.md."""
+    return build_plan_markdown(
+        pkg=pkg,
         relationship="transitive",
-        via=pkg.package,
+        fixed_version=source_required_version,
+        breaking=False,
         ghsas=ghsas,
-        pr_ref=pr_ref,
     )
-
-    return f"""## {severity.upper()} — `{pkg.package}` ({pkg.ecosystem}) [transitive via `{source_package}`]
-
-- [ ] **AC:** {ac_line}
-
-### Issue details
-| Field | Value |
-|---|---|
-| Vulnerable package | `{pkg.package}` |
-| Ecosystem | `{pkg.ecosystem}` |
-| Vulnerable range | `{pkg.current_version_range}` |
-| Patched vulnerable package version | `{source_required_version}` |
-| Relationship | `transitive` |
-| GHSAs | {", ".join(ghsas) if ghsas else "—"} |
-
-### Source details
-| Field | Value |
-|---|---|
-| Source package to update | `{source_package}` |
-| Source candidates from dependency graph | {sources_str or "—"} |
-| Required source version | `{source_package} >= {source_required_version}` |
-
-### Vulnerability summary
-{build_vuln_summary_lines(pkg.vulnerabilities)}
-
-### Resolution options
-- [ ] Assign to coding agent (Copilot / LLM) to author the fix PR
-- [ ] Self-resolve — bump `{source_package}` to `>= {source_required_version}` manually
-
-### Notes
-_Add context, blockers, or migration hints here._
-"""
 
 def resolve_pull_url(pkg: SecurityPackageTriage, fix_class: FixClass) -> str:
     if fix_class == FixClass.NON_BREAKING_BUMP and pkg.non_breaking_pull_metadata:
@@ -505,13 +463,7 @@ def build_placeholder_markdown(
     severity: str,
     ghsas: list[str],
 ) -> str:
-    """
-    Leads with a single crisp `- [ ] **AC:**` line (built via build_ac_line())
-    capturing package, current→target version, breaking flag, and every
-    closed GHSA/CVE in one line — terse enough to feed directly to an LLM
-    coding agent as the fix spec. The table below is kept only as
-    supplementary human-readable context.
-    """
+    """Produce the compact markdown block written to plan.md."""
     breaking = fix_class in (FixClass.BREAKING_BUMP, FixClass.PARTIAL_FIX_AVAILABLE)
     target = (
         pkg.breaking_upgrade_version
@@ -520,40 +472,13 @@ def build_placeholder_markdown(
         or pkg.remediated_version
     )
 
-    ac_line = build_ac_line(
-        target_package=pkg.package,
-        current_version_range=pkg.current_version_range,
-        target_version=target,
-        breaking=breaking,
+    return build_plan_markdown(
+        pkg=pkg,
         relationship="direct",
+        fixed_version=target,
+        breaking=breaking,
         ghsas=ghsas,
     )
-
-    return f"""## {severity.upper()} — `{pkg.package}` ({pkg.ecosystem})
-
-- [ ] **AC:** {ac_line}
-
-**Target version:** {target or "—"}
-
-| Field | Value |
-|---|---|
-| Ecosystem | `{pkg.ecosystem}` |
-| Current range | `{pkg.current_version_range}` |
-| Target version | `{target or "—"}` |
-| Relationship | direct |
-| Breaking change | {"Yes" if breaking else "No"} |
-| GHSAs | {", ".join(ghsas) if ghsas else "—"} |
-
-### Vulnerability summary
-{build_vuln_summary_lines(pkg.vulnerabilities)}
-
-### Resolution options
-- [ ] Assign to coding agent (Copilot / LLM) to author the fix PR
-- [ ] Self-resolve — implement migration manually
-
-### Notes
-_Add context, blockers, or migration hints here._
-"""
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
