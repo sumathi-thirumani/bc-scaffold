@@ -378,32 +378,24 @@ def build_ac_line(
     breaking: bool,
     relationship: str,            # "direct" | "transitive"
     ghsas: list[str],
-    dependency_paths: list[str] | None = None,
+    via: str | None = None,       # vulnerable child package, for transitive AC lines
     pr_ref: str | None = None,    # e.g. "existing PR #123 insufficient (reaches `1.2.0`)"
 ) -> str:
     """
-    Produce a parseable acceptance-criteria block summarizing exactly what
-    needs to change. Designed to double as an LLM coding-agent prompt.
+    Produce one terse, parseable acceptance-criteria line summarizing exactly
+    what needs to change. Designed to double as an LLM coding-agent prompt:
+    package, current→target version, breaking flag, direct/transitive +
+    chain, and every CVE/GHSA the bump closes — all on one line.
     """
-    fixed_str = f">={target_version}" if target_version else "no known fix"
-    dependency_paths = dependency_paths or []
-    dependency_path_lines = "\n".join(
-        f"- {dependency_path}" for dependency_path in dependency_paths
-    ) or "- —"
-    advisory_lines = "\n".join(f"- {ghsa}" for ghsa in ghsas) or "- —"
+    change_tag = "BREAKING" if breaking else "non-breaking"
+    rel_tag = f"transitive fix for `{via}`" if relationship == "transitive" and via else "direct"
+    ghsa_str = ", ".join(ghsas) if ghsas else "none"
+    target_str = target_version or "no known fix"
     pr_str = f"; {pr_ref}" if pr_ref else ""
 
     return (
-        f"## {target_package}\n\n"
-        f"Package: {target_package}\n"
-        f"Type: {relationship}\n"
-        f"Affected: {current_version_range}\n"
-        f"Fixed: {fixed_str}\n"
-        f"Is Breaking Dependency: {'Yes' if breaking else 'No'}{pr_str}\n"
-        f"Dependency paths:\n"
-        f"{dependency_path_lines}\n\n"
-        f"Advisories:\n"
-        f"{advisory_lines}"
+        f"Bump `{target_package}` `{current_version_range}` → `{target_str}` "
+        f"[{change_tag}, {rel_tag}] — closes {ghsa_str}{pr_str}"
     )
 
 
@@ -423,10 +415,13 @@ def build_transitive_placeholder_markdown(
     chain context — child package, affected version range, GHSAs, and a note
     about any existing PR that falls short.
 
-    The body leads with a parseable AC block (built via build_ac_line()) that
-    captures the full fix spec — package, affected/fixed versions, breaking
-    flag, dependency paths, and every closed GHSA/CVE. The table below it is
-    kept only as supplementary human-readable context.
+    The body now leads with a single crisp `- [ ] **AC:**` line (built via
+    build_ac_line()) that captures the full fix spec — package, current→target
+    version, breaking flag, transitive chain, and every closed GHSA/CVE — in
+    one line. This line is what the workflow's severity-level placeholder PR
+    extracts directly, and it's terse enough to use as an LLM coding-agent
+    prompt on its own. The table below it is kept only as supplementary
+    human-readable context.
     """
     sources_str = ", ".join(pkg.transitive_source_package)
 
@@ -441,12 +436,14 @@ def build_transitive_placeholder_markdown(
         target_version=source_required_version,
         breaking=False,
         relationship="transitive",
-        dependency_paths=pkg.transitive_source_package,
+        via=pkg.package,
         ghsas=ghsas,
         pr_ref=pr_ref,
     )
 
-    return f"""{ac_line}
+    return f"""## {severity.upper()} — `{pkg.package}` ({pkg.ecosystem}) [transitive via `{source_package}`]
+
+- [ ] **AC:** {ac_line}
 
 ### Issue details
 | Field | Value |
@@ -509,10 +506,11 @@ def build_placeholder_markdown(
     ghsas: list[str],
 ) -> str:
     """
-    Leads with a parseable AC block (built via build_ac_line()) capturing
-    package, affected/fixed versions, breaking flag, dependency paths, and
-    every closed GHSA/CVE. The table below is kept only as supplementary
-    human-readable context.
+    Leads with a single crisp `- [ ] **AC:**` line (built via build_ac_line())
+    capturing package, current→target version, breaking flag, and every
+    closed GHSA/CVE in one line — terse enough to feed directly to an LLM
+    coding agent as the fix spec. The table below is kept only as
+    supplementary human-readable context.
     """
     breaking = fix_class in (FixClass.BREAKING_BUMP, FixClass.PARTIAL_FIX_AVAILABLE)
     target = (
@@ -528,11 +526,12 @@ def build_placeholder_markdown(
         target_version=target,
         breaking=breaking,
         relationship="direct",
-        dependency_paths=[],
         ghsas=ghsas,
     )
 
-    return f"""{ac_line}
+    return f"""## {severity.upper()} — `{pkg.package}` ({pkg.ecosystem})
+
+- [ ] **AC:** {ac_line}
 
 **Target version:** {target or "—"}
 
