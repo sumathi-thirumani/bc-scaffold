@@ -6,7 +6,7 @@ from spdx_tools.spdx.model.spdx_no_assertion import SpdxNoAssertion
 from spdx_tools.spdx.model.spdx_none import SpdxNone
 from spdx_tools.spdx.model.document import Document
 
-from ..models.package_info import PackageInfo
+from models.package_info import PackageInfo
 
 
 class SBOMGraph:
@@ -72,6 +72,12 @@ class SBOMGraph:
     # ── classification ────────────────────────────────
 
     def dependency_type(self, spdx_id: str) -> str:
+        # BUG FIX: without this check, the repo-root package itself falls
+        # through to "transitive" below, since _bfs() seeds `visited` with
+        # root_ids as well as direct — it's never wrong per se, but it's
+        # misleading for the one node that isn't really a dependency at all.
+        if spdx_id in self.root_ids:
+            return "root"
         if spdx_id in self.direct:
             return "direct"
         if spdx_id in self.visited:
@@ -113,11 +119,29 @@ class SBOMGraph:
         return sorted(out)
 
     def _eid(self, rel, kind: str) -> str:
-        value = getattr(
-            rel,
-            f"{kind}_spdx_element_id",
-            getattr(rel, f"{kind}_spdx_element", None),
-        )
+        # BUG FIX: the real spdx_tools.spdx.model.Relationship fields are
+        # `spdx_element_id` (the relationship's source/"element") and
+        # `related_spdx_element_id` (the target/"related") — there is no
+        # `element_` prefix on the source field. The previous version built
+        # the attribute name as f"{kind}_spdx_element_id", which produced
+        # "element_spdx_element_id" for the source side — an attribute that
+        # never exists on the object. That silently resolved to None via the
+        # nested getattr default, collapsing every relationship's source to
+        # an empty spdx_id ("").
+        #
+        # The practical effect: self.children[""] ended up holding *every*
+        # dst across the whole document, so _compute_direct() treated every
+        # package with any incoming DEPENDS_ON edge as "direct" — including
+        # packages several hops deep that should have been "transitive" —
+        # and no real package id ever appeared as a key in self.children,
+        # so _bfs() had nothing further to walk. Transitive dependencies
+        # were never correctly classified as a result.
+        #
+        # The "related" side happened to work before this fix purely by
+        # coincidence: "related_" + "spdx_element_id" already matches the
+        # real attribute name.
+        attr = "spdx_element_id" if kind == "element" else "related_spdx_element_id"
+        value = getattr(rel, attr, None)
         return self._spdx_id(value)
 
     def _spdx_id(self, value) -> str:
@@ -147,4 +171,3 @@ class SBOMGraph:
 
     def ecosystems(self):
         return sorted({i.ecosystem for i in self.infos.values()})
-    
