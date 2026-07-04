@@ -6,7 +6,7 @@ from spdx_tools.spdx.model.spdx_no_assertion import SpdxNoAssertion
 from spdx_tools.spdx.model.spdx_none import SpdxNone
 from spdx_tools.spdx.model.document import Document
 
-from models.package_info import PackageInfo
+from ..models.package_info import PackageInfo
 
 
 class SBOMGraph:
