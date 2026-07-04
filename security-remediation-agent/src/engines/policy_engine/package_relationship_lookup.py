@@ -39,7 +39,6 @@ class PackageRelationshipLookup:
             triage.transitive_source_package = self._extract_sources(
                 triage,
                 sbom_matches,
-                sbom_transitive,
             )
 
     def _is_transitive_from_alerts(self, alerts: list[VulnerabilityAlert]) -> bool:
@@ -83,14 +82,12 @@ class PackageRelationshipLookup:
         self,
         triage: SecurityPackageTriage,
         sbom_matches: list[dict[str, Any]],
-        sbom_transitive: bool,
     ) -> list[str]:
         raw: list[str] = []
 
-        if sbom_transitive:
+        if sbom_matches:
             for p in sbom_matches:
-                if str(p.get("dependency_type", "")).lower() == "transitive":
-                    raw.extend(p.get("source_packages") or [])
+                raw.extend(p.get("source_packages") or [])
         else:
             for alert in triage.vulnerabilities:
                 raw.extend(getattr(alert, "depends_on", []) or [])

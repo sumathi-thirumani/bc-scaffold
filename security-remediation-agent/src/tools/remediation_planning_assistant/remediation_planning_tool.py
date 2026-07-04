@@ -123,21 +123,6 @@ def build_transitive_plan(pkg: SecurityPackageTriage) -> RemediationPlan:
     severity = effective_severity(pkg)
     ghsas = dedupe_ghsas(pkg.vulnerabilities)
 
-    if not pkg.transitive_source_package:
-        action = ActionPlan(
-            action_type=ActionType.OPEN_ISSUE,
-            pull_url="",
-            pr_number=None,
-            placeholder_markdown="",
-            target_package="UNKNOWN_SOURCE_PACKAGE",
-        )
-        return _finalize_transitive_plan(
-            pkg, severity, ghsas, action,
-            source_package="unidentified",
-            source_required_version=None,
-            undershooting_pr=None,
-        )
-
     # BUG-1 + BUG-2 FIX: strip the "@version" suffix before comparing, and
     # only accept PRs whose bump target satisfies the required fix version.
     source_pr, source_package, source_required_version = find_source_pull_metadata(pkg)
@@ -165,7 +150,7 @@ def build_transitive_plan(pkg: SecurityPackageTriage) -> RemediationPlan:
 
     # No adequate PR found. Check whether there is an *undershooting* PR
     # (exists but targets a version below what's needed) so we can note it.
-    undershooting_pr, _ = find_undershooting_pr(pkg, source_package)
+    undershooting_pr, _ = find_undershooting_pr(pkg, source_package) if source_package else (None, "")
 
     if source_required_version:
         # Cases 3 & 4: we know what version the source needs to reach.
@@ -183,7 +168,7 @@ def build_transitive_plan(pkg: SecurityPackageTriage) -> RemediationPlan:
                 source_required_version=source_required_version,
                 undershooting_pr=undershooting_pr,
             ),
-            target_package=source_package,
+            target_package=source_package or "UNKNOWN_SOURCE_PACKAGE",
         )
     else:
         # Case 5: source package has no known fix version either.

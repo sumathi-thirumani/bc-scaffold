@@ -176,6 +176,45 @@ def test_transitive_placeholder_uses_transitive_source_package_for_dependency_pa
     assert "- —" not in markdown
 
 
+def test_transitive_placeholder_without_sources_keeps_new_markdown_format() -> None:
+    pkg = make_transitive_pkg()
+    pkg.package = "http-proxy-middleware"
+    pkg.current_version_range = ">= 0.16.0, < 2.0.10"
+    pkg.remediated_version = "2.0.10"
+    pkg.transitive_source_package = []
+    pkg.vulnerabilities = [
+        make_alert(
+            package="http-proxy-middleware",
+            ecosystem=ECOSYSTEM,
+            severity="high",
+            ghsa_id="GHSA-64mm-vxmg-q3vj",
+            first_patched="2.0.10",
+            vulnerable_range=">= 0.16.0, < 2.0.10",
+            relationship="indirect",
+        ),
+        make_alert(
+            package="http-proxy-middleware",
+            ecosystem=ECOSYSTEM,
+            severity="high",
+            ghsa_id="GHSA-4www-5p9h-95mh",
+            first_patched="2.0.10",
+            vulnerable_range=">= 0.16.0, < 2.0.10",
+            relationship="indirect",
+        ),
+    ]
+
+    plan = build_transitive_plan(pkg)
+
+    assert plan.action.action_type == ActionType.PLACEHOLDER_PR
+    assert plan.action.target_package == "UNKNOWN_SOURCE_PACKAGE"
+    assert "## http-proxy-middleware" in plan.action.placeholder_markdown
+    assert "Type: transitive" in plan.action.placeholder_markdown
+    assert "Affected: >= 0.16.0, < 2.0.10" in plan.action.placeholder_markdown
+    assert "Fixed: >=2.0.10" in plan.action.placeholder_markdown
+    assert "Dependency paths:\n- —" in plan.action.placeholder_markdown
+    assert "Advisories:\n- GHSA-64mm-vxmg-q3vj\n- GHSA-4www-5p9h-95mh" in plan.action.placeholder_markdown
+
+
 def test_transitive_triage_does_not_override_alert_remediated_version() -> None:
     from src.agents.vulnerability_triage_agent import VulnerabilityTriageAgent
 
