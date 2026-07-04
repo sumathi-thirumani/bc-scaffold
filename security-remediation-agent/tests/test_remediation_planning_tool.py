@@ -112,7 +112,13 @@ def test_fix_direction_without_existing_pr_creates_placeholder_plan() -> None:
 
     plan = build_direct_plan(pkg)
     assert_placeholder_plan(plan, "demo")
-    assert "**Target version:** 2.0.0" in plan.action.placeholder_markdown
+    assert "## demo" in plan.action.placeholder_markdown
+    assert "Package: demo" in plan.action.placeholder_markdown
+    assert "Type: unknown" in plan.action.placeholder_markdown
+    assert "Affected: <2.0.0" in plan.action.placeholder_markdown
+    assert "Fixed: >=2.0.0" in plan.action.placeholder_markdown
+    assert "Is Breaking Dependency: No" in plan.action.placeholder_markdown
+    assert "Advisories:\n- GHSA-demo" in plan.action.placeholder_markdown
 
 
 def test_critical_transitive_fix_direction_without_pr_creates_placeholder_plan() -> None:
@@ -120,12 +126,14 @@ def test_critical_transitive_fix_direction_without_pr_creates_placeholder_plan()
 
     assert plan.package.effective_severity == "critical"
     assert_placeholder_plan(plan, "axios")
-    assert f"`axios >= {TRANSITIVE_FIX_VERSION}`" in plan.action.placeholder_markdown
-    assert "### Issue details" in plan.action.placeholder_markdown
-    assert f"| Patched vulnerable package version | `{TRANSITIVE_FIX_VERSION}` |" in plan.action.placeholder_markdown
-    assert "### Source details" in plan.action.placeholder_markdown
-    assert "| Source package to update | `axios` |" in plan.action.placeholder_markdown
-    assert f"| Source candidates from dependency graph | {TRANSITIVE_SOURCE} |" in plan.action.placeholder_markdown
+    assert f"## {TRANSITIVE_PACKAGE}" in plan.action.placeholder_markdown
+    assert f"Package: {TRANSITIVE_PACKAGE}" in plan.action.placeholder_markdown
+    assert "Type: transitive" in plan.action.placeholder_markdown
+    assert f"Affected: {TRANSITIVE_RANGE}" in plan.action.placeholder_markdown
+    assert f"Fixed: >={TRANSITIVE_FIX_VERSION}" in plan.action.placeholder_markdown
+    assert "Is Breaking Dependency: No" in plan.action.placeholder_markdown
+    assert f"Dependency paths:\n- axios → {TRANSITIVE_PACKAGE}" in plan.action.placeholder_markdown
+    assert "Advisories:\n- GHSA-form-data" in plan.action.placeholder_markdown
 
 
 def test_transitive_triage_preserves_patched_vulnerable_package_version() -> None:
@@ -147,4 +155,4 @@ def test_indirect_alert_placeholder_is_not_marked_direct() -> None:
 
     assert plan.package.relationship == "transitive"
     assert "[non-breaking, direct]" not in plan.action.placeholder_markdown
-    assert "| Relationship | transitive |" in plan.action.placeholder_markdown
+    assert "Type: transitive" in plan.action.placeholder_markdown

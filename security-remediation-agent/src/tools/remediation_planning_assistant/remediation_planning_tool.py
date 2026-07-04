@@ -451,62 +451,13 @@ def build_transitive_placeholder_markdown(
     prompt on its own. The table below it is kept only as supplementary
     human-readable context.
     """
-    sources_str = ", ".join(pkg.transitive_source_package)
-    dependency_path = " → ".join(pkg.dependency_path) if pkg.dependency_path else "—"
-
-    pr_ref = None
-    if undershooting_pr:
-        _, to_ver = find_undershooting_pr(pkg, source_package)
-        pr_ref = f"existing PR #{undershooting_pr.pr_number} insufficient (reaches `{to_ver}`)"
-
-    ac_line = build_ac_line(
-        target_package=source_package,
-        current_version_range=pkg.current_version_range,
+    return build_simple_placeholder_markdown(
+        pkg=pkg,
+        relationship="transitive",
         target_version=source_required_version,
         breaking=False,
-        relationship="transitive",
-        via=pkg.package,
         ghsas=ghsas,
-        pr_ref=pr_ref,
     )
-
-    return f"""## {severity.upper()} — `{pkg.package}` ({pkg.ecosystem}) [transitive via `{source_package}`]
-
-- [ ] **AC:** {ac_line}
-
-### Issue details
-| Field | Value |
-|---|---|
-| Vulnerable package | `{pkg.package}` |
-| Ecosystem | `{pkg.ecosystem}` |
-| Vulnerable range | `{pkg.current_version_range}` |
-| Patched vulnerable package version | `{source_required_version}` |
-| Relationship | `transitive` |
-| Installed version | `{pkg.installed_version or "—"}` |
-| Manifest path | `{pkg.manifest_path or "—"}` |
-| Lockfile path | `{pkg.lockfile_path or "—"}` |
-| Dependency path | `{dependency_path}` |
-| Graph confidence | `{pkg.graph_confidence}` |
-| GHSAs | {", ".join(ghsas) if ghsas else "—"} |
-
-### Source details
-| Field | Value |
-|---|---|
-| Source package to update | `{source_package}` |
-| Nearest declared parent | `{pkg.nearest_declared_parent or source_package}` |
-| Source candidates from dependency graph | {sources_str or "—"} |
-| Required source version | `{source_package} >= {source_required_version}` |
-
-### Vulnerability summary
-{build_vuln_summary_lines(pkg.vulnerabilities)}
-
-### Resolution options
-- [ ] Assign to coding agent (Copilot / LLM) to author the fix PR
-- [ ] Self-resolve — bump `{source_package}` to `>= {source_required_version}` manually
-
-### Notes
-_Add context, blockers, or migration hints here._
-"""
 
 
 def build_manual_review_markdown(
@@ -514,22 +465,39 @@ def build_manual_review_markdown(
     severity: str,
     ghsas: list[str],
 ) -> str:
-    return f"""## {severity.upper()} — `{pkg.package}` ({pkg.ecosystem}) [manual review required]
+    return build_simple_placeholder_markdown(
+        pkg=pkg,
+        relationship="transitive",
+        target_version=pkg.remediated_version,
+        breaking=False,
+        ghsas=ghsas,
+    )
 
-Dependency graph unavailable. Do not auto-remediate this transitive finding until the dependency path and nearest declared parent are confirmed.
 
-| Field | Value |
-|---|---|
-| Vulnerable package | `{pkg.package}` |
-| Ecosystem | `{pkg.ecosystem}` |
-| Vulnerable range | `{pkg.current_version_range}` |
-| Patched vulnerable package version | `{pkg.remediated_version or "—"}` |
-| Relationship | `transitive` |
-| Manifest path | `{pkg.manifest_path or "—"}` |
-| Lockfile path | `{pkg.lockfile_path or "—"}` |
-| Graph confidence | `{pkg.graph_confidence}` |
-| Graph status | `{pkg.graph_status}` |
-| GHSAs | {", ".join(ghsas) if ghsas else "—"} |
+def build_simple_placeholder_markdown(
+    *,
+    pkg: SecurityPackageTriage,
+    relationship: str,
+    target_version: str | None,
+    breaking: bool,
+    ghsas: list[str],
+) -> str:
+    dependency_paths = dependency_path_lines(pkg)
+    advisories = "\n".join(f"- {ghsa}" for ghsa in ghsas) if ghsas else "- —"
+
+    return f"""## {pkg.package}
+
+Package: {pkg.package}
+Type: {relationship}
+Affected: {pkg.current_version_range}
+Fixed: >={target_version or "—"}
+Is Breaking Dependency: {"Yes" if breaking else "No"}
+
+Dependency paths:
+{dependency_paths}
+
+Advisories:
+{advisories}
 """
 
 def resolve_pull_url(pkg: SecurityPackageTriage, fix_class: FixClass) -> str:
@@ -580,40 +548,13 @@ def build_placeholder_markdown(
     )
     relationship = FixClassifier.derive_relationship(pkg) or "unknown"
 
-    ac_line = build_ac_line(
-        target_package=pkg.package,
-        current_version_range=pkg.current_version_range,
+    return build_simple_placeholder_markdown(
+        pkg=pkg,
+        relationship=relationship,
         target_version=target,
         breaking=breaking,
-        relationship=relationship,
         ghsas=ghsas,
     )
-
-    return f"""## {severity.upper()} — `{pkg.package}` ({pkg.ecosystem})
-
-- [ ] **AC:** {ac_line}
-
-**Target version:** {target or "—"}
-
-| Field | Value |
-|---|---|
-| Ecosystem | `{pkg.ecosystem}` |
-| Current range | `{pkg.current_version_range}` |
-| Target version | `{target or "—"}` |
-| Relationship | {relationship} |
-| Breaking change | {"Yes" if breaking else "No"} |
-| GHSAs | {", ".join(ghsas) if ghsas else "—"} |
-
-### Vulnerability summary
-{build_vuln_summary_lines(pkg.vulnerabilities)}
-
-### Resolution options
-- [ ] Assign to coding agent (Copilot / LLM) to author the fix PR
-- [ ] Self-resolve — implement migration manually
-
-### Notes
-_Add context, blockers, or migration hints here._
-"""
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -645,3 +586,19 @@ def build_vuln_summary_lines(vulnerabilities: list) -> str:
         f"- **{vulnerability.ghsa_id}** (CVSS {vulnerability.cvss}) — {vulnerability.summary}"
         for vulnerability in unique.values()
     )
+
+
+def dependency_path_lines(pkg: SecurityPackageTriage) -> str:
+    paths: list[list[str]] = []
+    if pkg.dependency_path:
+        paths.append(pkg.dependency_path)
+    for source in pkg.transitive_source_package:
+        if not source:
+            continue
+        source_path = [source, pkg.package]
+        if source_path not in paths:
+            paths.append(source_path)
+
+    if not paths:
+        return "- —"
+    return "\n".join("- " + " → ".join(path) for path in paths)
