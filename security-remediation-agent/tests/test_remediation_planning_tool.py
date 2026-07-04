@@ -78,6 +78,11 @@ def make_transitive_pkg(*, remediated_version: str = TRANSITIVE_FIX_VERSION) -> 
         remediated_version=remediated_version,
         istransitive=True,
         transitive_source_package=transitive_source_package,
+        dependency_path=["axios", TRANSITIVE_PACKAGE] if remediated_version else [],
+        nearest_declared_parent="axios" if remediated_version else "",
+        remediation_target_dependency="axios" if remediated_version else "",
+        graph_confidence="high" if remediated_version else "unavailable",
+        graph_status="dependency graph available" if remediated_version else "dependency graph unavailable",
         vulnerabilities=[
             make_alert(
                 package=TRANSITIVE_PACKAGE,
@@ -123,12 +128,12 @@ def test_critical_transitive_fix_direction_without_pr_creates_placeholder_plan()
     assert f"| Source candidates from dependency graph | {TRANSITIVE_SOURCE} |" in plan.action.placeholder_markdown
 
 
-def test_transitive_triage_does_not_override_alert_remediated_version() -> None:
+def test_transitive_triage_preserves_patched_vulnerable_package_version() -> None:
     from src.agents.vulnerability_triage_agent import VulnerabilityTriageAgent
 
     pkg = make_transitive_pkg(remediated_version="")
 
     VulnerabilityTriageAgent().apply_triage_recommendation(pkg)
 
-    assert pkg.remediated_version == ""
+    assert pkg.remediated_version == TRANSITIVE_FIX_VERSION
     assert pkg.upgrade_version == ""

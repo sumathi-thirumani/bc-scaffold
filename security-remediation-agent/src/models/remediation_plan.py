@@ -41,6 +41,17 @@ class PackageContext:
     relationship: str            # "direct" | "transitive" | "indirect" | "unknown"
     transitive_source_package: list[str]
     unique_ghsas: list[str]
+    installed_version: str = ""
+    fixed_version: str = ""
+    manifest_path: str = ""
+    lockfile_path: str = ""
+    dependency_path: list[str] = field(default_factory=list)
+    nearest_declared_parent: str = ""
+    remediation_target_dependency: str = ""
+    graph_confidence: str = "unavailable"
+    graph_status: str = "dependency graph unavailable"
+    override_used: bool = False
+    override_justification: str = ""
 
 
 @dataclass

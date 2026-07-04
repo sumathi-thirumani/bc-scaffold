@@ -122,7 +122,40 @@ class RemediationPlanBundle:                            # ← fix 2
         return sorted(merged.values(), key=lambda g: g.impact != "Non-Breaking")
 
     def summary(self) -> dict[str, int]:
-        return {sev: len(group) for sev, group in self.groups.items()}
+        plans = [plan for group in self.groups.values() for plan in group.plans]
+        direct_updated = [
+            plan for plan in plans
+            if plan.package.relationship == "direct" and plan.action.action_type != ActionType.OPEN_ISSUE
+        ]
+        transitive_parent_updated = [
+            plan for plan in plans
+            if plan.package.relationship == "transitive"
+            and plan.package.graph_confidence != "unavailable"
+            and plan.action.action_type != ActionType.OPEN_ISSUE
+        ]
+        graph_unavailable = [
+            plan for plan in plans
+            if plan.package.relationship == "transitive"
+            and plan.package.graph_confidence == "unavailable"
+        ]
+        overrides = [plan for plan in plans if plan.package.override_used]
+        files_changed = sorted(
+            {
+                path
+                for plan in plans
+                for path in (plan.package.manifest_path, plan.package.lockfile_path)
+                if path
+            }
+        )
+        by_severity = {sev: len(group) for sev, group in self.groups.items()}
+        return {
+            **by_severity,
+            "direct_dependencies_updated": len(direct_updated),
+            "parent_dependencies_updated_for_transitive_vulnerabilities": len(transitive_parent_updated),
+            "transitive_packages_excluded_graph_unavailable": len(graph_unavailable),
+            "overrides_or_resolutions_used": len(overrides),
+            "files_changed": files_changed,
+        }
 
     def __len__(self) -> int:
         return sum(len(g) for g in self.groups.values())

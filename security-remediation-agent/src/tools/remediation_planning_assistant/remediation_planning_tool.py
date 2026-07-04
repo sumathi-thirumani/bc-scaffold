@@ -60,6 +60,17 @@ def build_direct_plan(pkg: SecurityPackageTriage) -> RemediationPlan:
             relationship=FixClassifier.derive_relationship(pkg),
             transitive_source_package=pkg.transitive_source_package,
             unique_ghsas=ghsas,
+            installed_version=pkg.installed_version,
+            fixed_version=pkg.fixed_version or pkg.remediated_version,
+            manifest_path=pkg.manifest_path,
+            lockfile_path=pkg.lockfile_path,
+            dependency_path=pkg.dependency_path,
+            nearest_declared_parent=pkg.nearest_declared_parent,
+            remediation_target_dependency=pkg.remediation_target_dependency or pkg.package,
+            graph_confidence=pkg.graph_confidence,
+            graph_status=pkg.graph_status,
+            override_used=pkg.override_used,
+            override_justification=pkg.override_justification,
         ),
         fix=FixPlan(
             fix_class=fix_class,
@@ -123,12 +134,12 @@ def build_transitive_plan(pkg: SecurityPackageTriage) -> RemediationPlan:
     severity = effective_severity(pkg)
     ghsas = dedupe_ghsas(pkg.vulnerabilities)
 
-    if not pkg.transitive_source_package:
+    if pkg.graph_confidence == "unavailable" or not pkg.transitive_source_package:
         action = ActionPlan(
             action_type=ActionType.OPEN_ISSUE,
             pull_url="",
             pr_number=None,
-            placeholder_markdown="",
+            placeholder_markdown=build_manual_review_markdown(pkg, severity, ghsas),
             target_package="UNKNOWN_SOURCE_PACKAGE",
         )
         return _finalize_transitive_plan(
@@ -249,6 +260,17 @@ def _finalize_transitive_plan(
             relationship="transitive",
             transitive_source_package=pkg.transitive_source_package,
             unique_ghsas=ghsas,
+            installed_version=pkg.installed_version,
+            fixed_version=pkg.fixed_version or pkg.remediated_version,
+            manifest_path=pkg.manifest_path,
+            lockfile_path=pkg.lockfile_path,
+            dependency_path=pkg.dependency_path,
+            nearest_declared_parent=pkg.nearest_declared_parent,
+            remediation_target_dependency=pkg.remediation_target_dependency or source_package,
+            graph_confidence=pkg.graph_confidence,
+            graph_status=pkg.graph_status,
+            override_used=pkg.override_used,
+            override_justification=pkg.override_justification,
         ),
         fix=FixPlan(
             fix_class=fix_class,
@@ -424,6 +446,7 @@ def build_transitive_placeholder_markdown(
     human-readable context.
     """
     sources_str = ", ".join(pkg.transitive_source_package)
+    dependency_path = " → ".join(pkg.dependency_path) if pkg.dependency_path else "—"
 
     pr_ref = None
     if undershooting_pr:
@@ -453,12 +476,18 @@ def build_transitive_placeholder_markdown(
 | Vulnerable range | `{pkg.current_version_range}` |
 | Patched vulnerable package version | `{source_required_version}` |
 | Relationship | `transitive` |
+| Installed version | `{pkg.installed_version or "—"}` |
+| Manifest path | `{pkg.manifest_path or "—"}` |
+| Lockfile path | `{pkg.lockfile_path or "—"}` |
+| Dependency path | `{dependency_path}` |
+| Graph confidence | `{pkg.graph_confidence}` |
 | GHSAs | {", ".join(ghsas) if ghsas else "—"} |
 
 ### Source details
 | Field | Value |
 |---|---|
 | Source package to update | `{source_package}` |
+| Nearest declared parent | `{pkg.nearest_declared_parent or source_package}` |
 | Source candidates from dependency graph | {sources_str or "—"} |
 | Required source version | `{source_package} >= {source_required_version}` |
 
@@ -471,6 +500,30 @@ def build_transitive_placeholder_markdown(
 
 ### Notes
 _Add context, blockers, or migration hints here._
+"""
+
+
+def build_manual_review_markdown(
+    pkg: SecurityPackageTriage,
+    severity: str,
+    ghsas: list[str],
+) -> str:
+    return f"""## {severity.upper()} — `{pkg.package}` ({pkg.ecosystem}) [manual review required]
+
+Dependency graph unavailable. Do not auto-remediate this transitive finding until the dependency path and nearest declared parent are confirmed.
+
+| Field | Value |
+|---|---|
+| Vulnerable package | `{pkg.package}` |
+| Ecosystem | `{pkg.ecosystem}` |
+| Vulnerable range | `{pkg.current_version_range}` |
+| Patched vulnerable package version | `{pkg.remediated_version or "—"}` |
+| Relationship | `transitive` |
+| Manifest path | `{pkg.manifest_path or "—"}` |
+| Lockfile path | `{pkg.lockfile_path or "—"}` |
+| Graph confidence | `{pkg.graph_confidence}` |
+| Graph status | `{pkg.graph_status}` |
+| GHSAs | {", ".join(ghsas) if ghsas else "—"} |
 """
 
 def resolve_pull_url(pkg: SecurityPackageTriage, fix_class: FixClass) -> str:
@@ -558,7 +611,11 @@ _Add context, blockers, or migration hints here._
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 def effective_severity(pkg: SecurityPackageTriage) -> str:
-    return pkg.severity
+    if pkg.severity:
+        return pkg.severity
+    severities = ["critical", "high", "medium", "low"]
+    alert_severities = {vulnerability.severity.lower() for vulnerability in pkg.vulnerabilities}
+    return next((severity for severity in severities if severity in alert_severities), "unknown")
 
 
 def dedupe_ghsas(vulnerabilities: list) -> list[str]:
