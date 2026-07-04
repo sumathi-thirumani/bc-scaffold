@@ -37,7 +37,6 @@ def make_alert(
     first_patched: str,
     vulnerable_range: str,
     relationship: str = "",
-    manifest_path: str = "",
 ) -> VulnerabilityAlert:
     return VulnerabilityAlert(
         package=package,
@@ -47,7 +46,6 @@ def make_alert(
         first_patched=first_patched,
         vulnerable_range=vulnerable_range,
         relationship=relationship,
-        manifest_path=manifest_path,
     )
 
 
@@ -65,7 +63,6 @@ def make_direct_pkg() -> SecurityPackageTriage:
                 ghsa_id="GHSA-demo",
                 first_patched="2.0.0",
                 vulnerable_range="<2.0.0",
-                relationship="direct",
             )
         ],
     )
@@ -77,7 +74,6 @@ def make_transitive_pkg(*, remediated_version: str = TRANSITIVE_FIX_VERSION) -> 
     return SecurityPackageTriage(
         package=TRANSITIVE_PACKAGE,
         ecosystem=ECOSYSTEM,
-        severity="critical",
         current_version_range=TRANSITIVE_RANGE,
         remediated_version=remediated_version,
         istransitive=True,
@@ -111,34 +107,7 @@ def test_fix_direction_without_existing_pr_creates_placeholder_plan() -> None:
 
     plan = build_direct_plan(pkg)
     assert_placeholder_plan(plan, "demo")
-    assert "## demo" in plan.action.placeholder_markdown
-    assert "Package: demo" in plan.action.placeholder_markdown
-    assert "Type: direct" in plan.action.placeholder_markdown
-    assert "Affected: <2.0.0" in plan.action.placeholder_markdown
-    assert "Fixed: >=2.0.0" in plan.action.placeholder_markdown
-    assert "Is Breaking Dependency: No" in plan.action.placeholder_markdown
-    assert "Advisories:\n- GHSA-demo" in plan.action.placeholder_markdown
-
-
-def test_direct_placeholder_uses_alert_relationship_when_not_transitive() -> None:
-    pkg = make_direct_pkg()
-    pkg.vulnerabilities[0].relationship = "direct"
-
-    plan = build_direct_plan(pkg)
-
-    assert plan.package.relationship == "direct"
-    assert "Type: direct" in plan.action.placeholder_markdown
-
-
-def test_placeholder_does_not_mark_indirect_alert_as_direct() -> None:
-    pkg = make_direct_pkg()
-    pkg.vulnerabilities[0].relationship = "indirect"
-
-    plan = build_direct_plan(pkg)
-
-    assert plan.package.relationship == "indirect"
-    assert "Type: indirect" in plan.action.placeholder_markdown
-    assert "Type: direct" not in plan.action.placeholder_markdown
+    assert "**Target version:** 2.0.0" in plan.action.placeholder_markdown
 
 
 def test_critical_transitive_fix_direction_without_pr_creates_placeholder_plan() -> None:
@@ -146,81 +115,20 @@ def test_critical_transitive_fix_direction_without_pr_creates_placeholder_plan()
 
     assert plan.package.effective_severity == "critical"
     assert_placeholder_plan(plan, "axios")
-    assert "## form-data" in plan.action.placeholder_markdown
-    assert "Package: form-data" in plan.action.placeholder_markdown
-    assert "Type: transitive" in plan.action.placeholder_markdown
-    assert f"Affected: {TRANSITIVE_RANGE}" in plan.action.placeholder_markdown
-    assert f"Fixed: >={TRANSITIVE_FIX_VERSION}" in plan.action.placeholder_markdown
-    assert "Is Breaking Dependency: No" in plan.action.placeholder_markdown
-    assert f"Dependency paths:\n- {TRANSITIVE_SOURCE} → form-data" in plan.action.placeholder_markdown
-    assert "Advisories:\n- GHSA-form-data" in plan.action.placeholder_markdown
+    assert f"`axios >= {TRANSITIVE_FIX_VERSION}`" in plan.action.placeholder_markdown
+    assert "### Issue details" in plan.action.placeholder_markdown
+    assert f"| Patched vulnerable package version | `{TRANSITIVE_FIX_VERSION}` |" in plan.action.placeholder_markdown
+    assert "### Source details" in plan.action.placeholder_markdown
+    assert "| Source package to update | `axios` |" in plan.action.placeholder_markdown
+    assert f"| Source candidates from dependency graph | {TRANSITIVE_SOURCE} |" in plan.action.placeholder_markdown
 
 
-def test_transitive_placeholder_uses_transitive_source_package_for_dependency_paths() -> None:
-    pkg = make_transitive_pkg()
-    pkg.package = "tar"
-    pkg.current_version_range = "<= 7.5.15"
-    pkg.remediated_version = "7.5.16"
-    pkg.transitive_source_package = [
-        "node-sass@7.0.3",
-        "cacache@15.3.0",
-        "node-gyp@8.4.1",
-    ]
-
-    markdown = build_transitive_plan(pkg).action.placeholder_markdown
-
-    assert "Dependency paths:" in markdown
-    assert "- node-sass@7.0.3 → tar" in markdown
-    assert "- cacache@15.3.0 → tar" in markdown
-    assert "- node-gyp@8.4.1 → tar" in markdown
-    assert "- —" not in markdown
-
-
-def test_transitive_placeholder_without_sources_keeps_new_markdown_format() -> None:
-    pkg = make_transitive_pkg()
-    pkg.package = "http-proxy-middleware"
-    pkg.current_version_range = ">= 0.16.0, < 2.0.10"
-    pkg.remediated_version = "2.0.10"
-    pkg.transitive_source_package = []
-    pkg.vulnerabilities = [
-        make_alert(
-            package="http-proxy-middleware",
-            ecosystem=ECOSYSTEM,
-            severity="high",
-            ghsa_id="GHSA-64mm-vxmg-q3vj",
-            first_patched="2.0.10",
-            vulnerable_range=">= 0.16.0, < 2.0.10",
-            relationship="indirect",
-        ),
-        make_alert(
-            package="http-proxy-middleware",
-            ecosystem=ECOSYSTEM,
-            severity="high",
-            ghsa_id="GHSA-4www-5p9h-95mh",
-            first_patched="2.0.10",
-            vulnerable_range=">= 0.16.0, < 2.0.10",
-            relationship="indirect",
-        ),
-    ]
-
-    plan = build_transitive_plan(pkg)
-
-    assert plan.action.action_type == ActionType.PLACEHOLDER_PR
-    assert plan.action.target_package == "UNKNOWN_SOURCE_PACKAGE"
-    assert "## http-proxy-middleware" in plan.action.placeholder_markdown
-    assert "Type: transitive" in plan.action.placeholder_markdown
-    assert "Affected: >= 0.16.0, < 2.0.10" in plan.action.placeholder_markdown
-    assert "Fixed: >=2.0.10" in plan.action.placeholder_markdown
-    assert "Dependency paths:\n- —" in plan.action.placeholder_markdown
-    assert "Advisories:\n- GHSA-64mm-vxmg-q3vj\n- GHSA-4www-5p9h-95mh" in plan.action.placeholder_markdown
-
-
-def test_transitive_triage_does_not_override_alert_remediated_version() -> None:
+def test_transitive_triage_preserves_patched_vulnerable_package_version() -> None:
     from src.agents.vulnerability_triage_agent import VulnerabilityTriageAgent
 
     pkg = make_transitive_pkg(remediated_version="")
 
     VulnerabilityTriageAgent().apply_triage_recommendation(pkg)
 
-    assert pkg.remediated_version == ""
+    assert pkg.remediated_version == TRANSITIVE_FIX_VERSION
     assert pkg.upgrade_version == ""

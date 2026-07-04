@@ -558,7 +558,11 @@ _Add context, blockers, or migration hints here._
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 def effective_severity(pkg: SecurityPackageTriage) -> str:
-    return pkg.severity
+    if pkg.severity:
+        return pkg.severity
+    severities = ["critical", "high", "medium", "low"]
+    alert_severities = {vulnerability.severity.lower() for vulnerability in pkg.vulnerabilities}
+    return next((severity for severity in severities if severity in alert_severities), "unknown")
 
 
 def dedupe_ghsas(vulnerabilities: list) -> list[str]:
