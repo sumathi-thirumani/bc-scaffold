@@ -123,12 +123,12 @@ def test_critical_transitive_fix_direction_without_pr_creates_placeholder_plan()
     assert f"| Source candidates from dependency graph | {TRANSITIVE_SOURCE} |" in plan.action.placeholder_markdown
 
 
-def test_transitive_triage_preserves_patched_vulnerable_package_version() -> None:
+def test_transitive_triage_does_not_override_alert_remediated_version() -> None:
     from src.agents.vulnerability_triage_agent import VulnerabilityTriageAgent
 
     pkg = make_transitive_pkg(remediated_version="")
 
     VulnerabilityTriageAgent().apply_triage_recommendation(pkg)
 
-    assert pkg.remediated_version == TRANSITIVE_FIX_VERSION
+    assert pkg.remediated_version == ""
     assert pkg.upgrade_version == ""
