@@ -1,0 +1,85 @@
+[project]
+name = "security-agent"
+version = "0.1.0"
+description = "Agentic security orchestrator for Dependabot, CodeQL, and GitHub vulnerability rollups"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Security Agent Team" }
+]
+
+dependencies = [
+  # Core HTTP + GitHub integration
+  "httpx>=0.27.0",
+  "requests>=2.31.0",
+  "PyGithub>=2.3.0",
+  # Async runtime (important for agent + tools)
+  "anyio>=4.4.0",
+  "asyncio-throttle>=1.0.2",
+  # Data handling / validation
+  "pydantic>=2.7.0",
+  "orjson>=3.10.0",
+  # CLI + environment
+  "typer>=0.12.3",
+  "python-dotenv>=1.0.1",
+  # Logging / observability
+  "rich>=13.7.0",
+  "structlog>=24.1.0",
+  # Optional LLM layer (for reasoning / Copilot-style planner)
+  "langchain-core>=0.2.0",
+  "openai>=1.30.0",
+  "tomli>=2.4.1",
+  "spdx-tools>=0.8.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "pytest-asyncio>=0.23.0",
+  "ruff>=0.5.0",
+  "mypy>=1.10.0"
+]
+
+agent = [
+  "fastapi>=0.111.0",
+  "uvicorn>=0.30.0"
+]
+
+mcp = [
+  "httpx>=0.27.0"
+]
+
+[project.scripts]
+security-agent = "cli.main:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+
+# -------------------------
+# Tooling configuration
+# -------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+
+# -------------------------
+# Pytest configuration
+# -------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
