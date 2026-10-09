@@ -1,106 +1,49 @@
-from __future__ import annotations
-
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
-from typing import Any
 
-
-
-# ── Enums ──────────────────────────────────────────────────────────────────────
-
-class FixClass(str, Enum):
-    NO_FIX_AVAILABLE      = "NO_FIX_AVAILABLE"
-    NON_BREAKING_BUMP     = "NON_BREAKING_BUMP"
-    BREAKING_BUMP         = "BREAKING_BUMP"
-    PARTIAL_FIX_AVAILABLE = "PARTIAL_FIX_AVAILABLE"
+from .gh.pull_request_metadata import PullRequestMetadata
+from .security_package_triage import SecurityPackageTriage
+from .security_remediation_context import SecurityRemediationContext
 
 
 class ActionType(str, Enum):
-    ROLLUP_PR      = "rollup_pr"        # non-breaking + PR exists → grouped
-    STANDALONE_PR  = "standalone_pr"    # breaking + PR exists → separate
-    PLACEHOLDER_PR = "placeholder_pr"   # no PR exists → markdown stub
-    OPEN_ISSUE     = "open_issue"       # no fix available
+    MANUAL_ACTION = "Need manual/agent review"
 
-
-class CodingAgent(str, Enum):
-    COPILOT = "copilot"
-    LLM     = "llm"
-    NONE    = "none"
-
-
-# ── Sub-models ─────────────────────────────────────────────────────────────────
 
 @dataclass
-class PackageContext:
-    name: str
+class RemeditionPackage:
     ecosystem: str
-    current_version_range: str
-    remediated_version: str
-    effective_severity: str            # highest across all vulnerabilities
-    relationship: str            # "direct" | "transitive" | "indirect" | "unknown"
-    transitive_source_package: list[str]
-    unique_ghsas: list[str]
-    installed_version: str = ""
-    fixed_version: str = ""
-    manifest_path: str = ""
-    lockfile_path: str = ""
-    dependency_path: list[str] = field(default_factory=list)
-    nearest_declared_parent: str = ""
-    remediation_target_dependency: str = ""
-    graph_confidence: str = "unavailable"
-    graph_status: str = "dependency graph unavailable"
-    override_used: bool = False
-    override_justification: str = ""
+    remediation_package: str
+    
+    current_version: str | None = None
+    remediation_version: str = ""
+    minimum_upgradable_version: str = ""
+    action_type: ActionType | None = None
+    upgrade_to_version: str = ""    
+    packages: list[SecurityPackageTriage] = field(default_factory=list)
+    remediation_prs: list[PullRequestMetadata] = field(default_factory=list)
 
 
 @dataclass
-class FixPlan:
-    fix_class: FixClass
-    non_breaking_fix: str | None       # "" normalized to None
-    breaking_fix: str | None
-    upgrade_version: str
-    partial_fix_available: bool
-    patch_available: bool
+class RemeditionPackageBundle:    
+    ecosystem: str
+    #Derived group name for the package bundle from renovate
+    groupName: str
+    # Severity of the issues in this package bundle (Max severity among the packages)
+    severity: str
+    packages: list[RemeditionPackage] = field(default_factory=list)
+    action_type: ActionType | None = None  # Normnalize action type from packages
 
 
 @dataclass
-class ActionPlan:
-    action_type: ActionType
-    pull_url: str                        # existing PR url if available
-    pr_number: int | None              # existing PR number if available
-    placeholder_markdown: str          # populated when action_type = PLACEHOLDER_PR
-    target_package: str                = ""  # package the action actually bumps —
-                                              # == package.name for direct findings,
-                                              # == the source package for transitive ones
+class RemediationReconcileInfo:
+    ecosystem: str
+    reconciliation_notes: str = ""
 
-
-@dataclass
-class PlanState:
-    assigned_agent: CodingAgent        = CodingAgent.NONE
-    agent_assigned_at: datetime | None = None
-    autofix_attempted: bool            = False
-    issue_id: str                      = ""
-    issue_url: str                     = ""
-    recheck_at: datetime | None        = None
-
-
-@dataclass
-class AuditEntry:
-    timestamp: str
-    agent: str
-    action: str
-    detail: str
-
-
-# ── Main model ─────────────────────────────────────────────────────────────────
 
 @dataclass
 class RemediationPlan:
-    plan_id:    str
-    created_at: datetime
-    package:    PackageContext
-    fix:        FixPlan
-    action:     ActionPlan
-    state:      PlanState
-    audit:      list[AuditEntry] = field(default_factory=list)
+    # List of remediation plan bundles for this plan - Each bundle corresponds to an issue.
+    remediation_plan_bundles: list[RemeditionPackageBundle] = field(default_factory=list)
+    reconciliation_info: list[RemediationReconcileInfo] = field(default_factory=list)
+    summary: SecurityRemediationContext | None = None

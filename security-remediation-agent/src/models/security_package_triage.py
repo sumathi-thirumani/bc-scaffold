@@ -1,71 +1,96 @@
 from dataclasses import dataclass, field
-from typing import Any
+from enum import Enum
+from typing import Any, Optional
 
-from ..tools.github_pr_collector.model.pull_request_metadata import PullRequestMetadata
-from ..tools.github_vulnerability_collector.model.vulnerability_alert import VulnerabilityAlert
+from .gh.pull_request_metadata import PullRequestMetadata
 
+from .gh.vulnerability_alert import VulnerabilityAlert
+
+
+class OccurrenceClassification(str, Enum):
+    """Where a resolved dependency occurrence sits in the manifest/lockfile graph."""
+    ROOT = "root"                # declared directly in the manifest; no introducers
+    TRANSITIVE = "transitive"    # pulled in by one or more introducer packages
+
+
+@dataclass
+class TransistiveSourcePackage:
+    package: str
+    version: str
+    classification: OccurrenceClassification = OccurrenceClassification.ROOT
+    recommended_version: str | None = None
+    recommendation_source: str | None = None
+    requires_verification: bool = False
+    recommendation_action: str | None = None
+
+@dataclass
+class TransistiveOccurances:
+    package: str
+    version: str    
+    introducers: list[TransistiveSourcePackage] = field(default_factory=list)
+    classification: OccurrenceClassification = OccurrenceClassification.TRANSITIVE
+    manifest_path: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.introducers:
+            self.classification = OccurrenceClassification.ROOT
+
+
+def occurrence_classification(occurrence) -> OccurrenceClassification:
+    """Classification of a resolved occurrence: ROOT (declared directly in
+    the manifest, no introducers) or TRANSITIVE (pulled in by another package)."""
+    classification = occurrence.get("classification") if isinstance(occurrence, dict) else getattr(occurrence, "classification", None)
+    if classification is not None:
+        return classification
+    introducers = occurrence.get("introducers") if isinstance(occurrence, dict) else getattr(occurrence, "introducers", None)
+    return OccurrenceClassification.ROOT if not introducers else OccurrenceClassification.TRANSITIVE
+
+
+def is_direct_occurrence(occurrence) -> bool:
+    return occurrence_classification(occurrence) == OccurrenceClassification.ROOT
+
+
+def is_direct_package(occurrences: list) -> bool:
+    """A package is direct when it has no transitive occurrences at all,
+    or every manifest lookup for it resolved as ROOT (no introducers)."""
+    return not occurrences or all(is_direct_occurrence(o) for o in occurrences)
+
+@dataclass
+class PackageUpgradeRecommendation:
+    package: str
+    from_version: str
+    to_version: str
+    requires_verification: bool = False
+    source: Optional[str] = None
+    pr_number: Optional[int] = None
+    pull_url: Optional[str] = None
+    pr_branch: Optional[str] = None
+    minimum_upgradable_version: str = ""
+    candidate_versions: list[str] = field(default_factory=list)
 
 @dataclass
 class SecurityPackageTriage:
     #Source: Vulnerability alert
     package: str
-    current_version_range: str
-    remediated_version: str
+    vulnerablility_version_range: str
+    vulnerablility_fixed_version: str
+    current_version: str = ""
     ecosystem: str = ""
+    manifest_path: str | None = None
+    #derivative information
     severity: str = ""
 
     #Source: Vulnerability alert and code scanning
     vulnerabilities: list[VulnerabilityAlert] = field(default_factory=list)
     scanning_alerts: list[Any] = field(default_factory=list)
 
-    # sbom
-    istransitive: bool = False
-    transitive_source_package: list[str] = field(default_factory=list)
-    installed_version: str = ""
-    fixed_version: str = ""
-    manifest_path: str = ""
-    lockfile_path: str = ""
-    dependency_path: list[str] = field(default_factory=list)
-    nearest_declared_parent: str = ""
-    remediation_target_dependency: str = ""
-    graph_confidence: str = "unavailable"
-    graph_status: str = "dependency graph unavailable"
-    override_used: bool = False
-    override_justification: str = ""
+    istransitive: bool = False    
 
+    # component relationship    
+    transitive_dependency_occurrences: list[TransistiveOccurances] = field(default_factory=list)
+    package_upgrade_recommendations: list[PackageUpgradeRecommendation] = field(default_factory=list)
 
-    #pulls - remediation by bot
+    #pulls - remediation & update consolidation
     is_pull_available: bool = False
-    pull_metadata: list[PullRequestMetadata] = field(default_factory=list)
+    pull_request_metadata: list[PullRequestMetadata] = field(default_factory=list)
 
-    # Determined values
-    #Computed; get the least applicable patch. if its breaking version. populate breaking; else non-breaking.
-    # for scenarios where both breaking and non-breaking present; both are populated.
-    breaking_upgrade_version: str = ""
-    non_breaking_upgrade_version: str = ""
-    breaking_pull_available: bool = False
-    breaking_pull_metadata: PullRequestMetadata | None = None
-    non_breaking_pull_available: bool = False
-    non_breaking_pull_metadata: PullRequestMetadata | None = None
-    isbreakable: bool = False
-
-    #issue
-    is_issue_created: bool = False
-    issue_metadata: dict[str, Any] = field(default_factory=dict)
-
-    #pulls - upgrades by bot
-    isupgradable: bool = False
-    upgrade_version: str = ""
-    upgrade_pull_metadata: list[PullRequestMetadata] = field(default_factory=list)
-    
-
-    @property
-    def relationship(self) -> str:
-        """Derived from ``istransitive`` so serialization is always consistent.
-
-        Downstream code (e.g. the remediation planner) serializes this property
-        into ``package.relationship`` in the orchestrator output.  Keeping it as
-        a computed property means it can never drift out of sync with the
-        underlying ``istransitive`` flag.
-        """
-        return "transitive" if self.istransitive else "direct"
