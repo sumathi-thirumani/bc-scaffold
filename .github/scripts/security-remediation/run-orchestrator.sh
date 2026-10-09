@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python ./octo-gha-tools/security-remediation-agent/main.py \
+python ./bc-scaffold/security-remediation-agent/main.py \
 	--owner "${GITHUB_REPOSITORY_OWNER}" \
 	--repo "${GITHUB_REPOSITORY#*/}" \
 	>orchestrator-output.json
