@@ -1,8 +1,26 @@
 from dataclasses import dataclass, field
-import logging
 from typing import Any
 
-from ...tools.utils.version_bump_resolver import VersionBump, get_version_bumps
+from pydantic import BaseModel
+
+
+class VersionBump(BaseModel):
+    package: str
+    from_version: str
+    to_version: str
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, dict):
+            return self.model_dump() == other
+
+        if isinstance(other, VersionBump):
+            return self.model_dump() == other.model_dump()
+
+        return super().__eq__(other)
+
+    def __iter__(self):
+        yield from self.model_dump().items()
+
 
 @dataclass
 class PullRequestMetadata:
@@ -27,6 +45,7 @@ class PullRequestMetadata:
                 bump.model_dump() if hasattr(bump, "model_dump") else bump
                 for bump in self.version_bumps
             ],
+            "mergeable_state": self.mergeable_state,
             "severity": "",
             "author": self.author,
         }
@@ -56,6 +75,8 @@ def build_pull_request_metadata(
     """
     Convert GitHub pull requests into normalized PullRequestMetadata objects.
     """
+    # The parser consumes VersionBump, so load it only when building metadata.
+    from ...engines.resolvers.artifact_pr_resolver.pr_pattern_version_extractor import get_version_bumps
 
     user = pull_request.get("user") or {}
 

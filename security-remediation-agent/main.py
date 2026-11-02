@@ -10,11 +10,13 @@ from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
 
+from src.agents.artifact_collector_agent import ArtifactCollectorAgent
 from src.agents.remediation_planner_agent import RemediationPlannerAgent
-from src.agents.remediation_report_agent import RemediationReportAgent
 from src.agents.vulnerability_collector_agent import VulnerabilityCollectorAgent
 from src.agents.vulnerability_triage_agent import VulnerabilityTriageAgent
+from src.models.security_remediation_context import SecurityRemediationCache
 from src.orchestrator.security_orchestrator import SecurityOrchestrator
+from src.tools.ecosystem_manifest_tool import ManifestTool
 
 
 def to_jsonable(value: Any) -> Any:
@@ -56,12 +58,21 @@ def validate_github_token() -> None:
 
 
 def configure_logging() -> None:
+    """Configure stderr logging; set LOG_LEVEL to DEBUG for verbose diagnostics."""
+    configured_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = logging.getLevelName(configured_level)
+    if not isinstance(log_level, int):
+        raise ValueError(
+            f"Invalid LOG_LEVEL {configured_level!r}; use DEBUG, INFO, WARNING, ERROR, or CRITICAL."
+        )
+
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         force=True,
         stream=sys.stderr,
     )
+    logging.getLogger(__name__).info("Logging configured at %s level", configured_level)
 
 
 async def async_main() -> None:
@@ -76,14 +87,19 @@ async def async_main() -> None:
 
     repo = {"owner": args.owner, "name": normalize_repo_name(args.repo)}
 
+    # One ManifestTool (and cache) shared by every stage of the run.
+    manifest_tool = ManifestTool(cache=SecurityRemediationCache())
     orchestrator = SecurityOrchestrator(
         VulnerabilityCollectorAgent(),
-        VulnerabilityTriageAgent(),
-        RemediationPlannerAgent(),
-        reporter=RemediationReportAgent(),
+        VulnerabilityTriageAgent(manifest_tool=manifest_tool),
+        RemediationPlannerAgent(manifest_tool=manifest_tool),
+        artifactCollectorAgent=ArtifactCollectorAgent(manifest_tool=manifest_tool),
     )
 
-    result = await orchestrator.run(repo)
+    try:
+        result = await orchestrator.run(repo)
+    finally:
+        await manifest_tool.aclose()
     print(json.dumps(to_jsonable(result), indent=2, sort_keys=True))
 
 

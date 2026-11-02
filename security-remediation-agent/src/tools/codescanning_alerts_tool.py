@@ -1,4 +1,3 @@
-import os
 from collections.abc import Iterable
 from typing import Any
 
@@ -7,11 +6,13 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from ..models.gh.codescanning_alert import CodescanningAlert
-
-from src.tools.dependabot_alerts_tool import (
-    GITHUB_API_VERSION,
+from .utils.github_api import (
+    GITHUB_API_VERSION as GITHUB_API_VERSION,
     PER_PAGE,
-    get_next_link,
+    GitHubApiError,
+    fetch_paginated_results,
+    get_github_headers,
+    get_next_link as get_next_link,
 )
 
 LANGUAGE_SPECIFIC_PACKAGE_VULNERABILITY_RULE = "LanguageSpecificPackageVulnerability"
@@ -23,40 +24,29 @@ class CodescanningAlertInput(BaseModel):
 
 
 async def get_codescanning_alerts(owner: str, repo: str) -> list[dict[str, Any]]:
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise RuntimeError("GITHUB_TOKEN environment variable is required")
-
     url = f"https://api.github.com/repos/{owner}/{repo}/code-scanning/alerts"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": GITHUB_API_VERSION,
-    }
     params = {"state": "open", "per_page": PER_PAGE}
+    headers = get_github_headers()
 
-    alerts: list[dict[str, Any]] = []
-    async with httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(30.0)) as client:
-        while True:
-            response = await client.get(url, params=params)
-            if response.status_code == 404:
-                # Code scanning is not enabled for this repository (or the
-                # token lacks access). GitHub returns 404 in that case rather
-                # than an empty list, so treat it as "no alerts" instead of
-                # failing the whole orchestration run.
-                break
-            response.raise_for_status()
+    try:
+        alerts = await fetch_paginated_results(
+            url,
+            params,
+            headers=headers,
+            owner=owner,
+            repo=repo,
+            resource="code-scanning alerts",
+            client_factory=httpx.AsyncClient,
+        )
+    except GitHubApiError as exc:
+        if exc.status_code == 404:
+            raise RuntimeError(
+                f"Unable to list code scanning alerts for {owner}/{repo}: GitHub returned "
+                "404. Confirm code scanning is enabled and GITHUB_TOKEN can read alerts."
+            ) from exc
+        raise
 
-            alerts.extend(filter_codescanning_alerts(response.json()))
-
-            next_url = get_next_link(response.headers.get("Link", ""))
-            if not next_url:
-                break
-
-            url = next_url
-            params = None
-
-    return alerts
+    return filter_codescanning_alerts(alerts)
 
 
 def filter_codescanning_alerts(alerts: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -70,22 +60,22 @@ def filter_codescanning_alerts(alerts: Iterable[dict[str, Any]]) -> list[dict[st
 
 
 async def normalize(alerts: Iterable[dict[str, Any]]) -> list[CodescanningAlert]:
-    codescanningFindings: list[CodescanningAlert] = []
+    codescanning_findings: list[CodescanningAlert] = []
 
     for alert in alerts:
         codescanning_alert = CodescanningAlert.from_codescanning_alert(alert)
         if codescanning_alert is not None:
-            codescanningFindings.append(codescanning_alert)
+            codescanning_findings.append(codescanning_alert)
 
-    return codescanningFindings
+    return codescanning_findings
 
 
 @tool(
     "collect_codescanning_alerts",
     args_schema=CodescanningAlertInput,
 )
-async def codescanning_alerts_tool(owner: str, repo: str) -> list[dict[str, Any]]:
+async def codescanning_alerts_tool(owner: str, repo: str) -> list[CodescanningAlert]:
     """Collect open GitHub code scanning alerts for a repository."""
-    alerts =  await get_codescanning_alerts(owner=owner, repo=repo)
+    alerts = await get_codescanning_alerts(owner=owner, repo=repo)
 
     return await normalize(alerts)

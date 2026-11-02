@@ -22,17 +22,7 @@ const GITHUB_BODY_MAX = 65536;
 const IMP_LABEL = { 'non-breaking': 'Non-Breaking', breaking: 'Breaking' };
 const ACT_LABEL = { rollup: 'Rollup', standalone: 'Standalone', placeholder: 'Placeholder', 'open-issue': 'Open Issue' };
 
-const ACTION_LABELS = {
-  'non-breaking-rollup': { color: '2da44e', description: 'Non-breaking fix included in a rollup PR' },
-  'non-breaking-standalone': { color: '6fdd8b', description: 'Non-breaking fix with its own standalone PR' },
-  'non-breaking-placeholder': { color: 'a8f0bc', description: 'Non-breaking fix - placeholder PR, needs manual attention' },
-  'non-breaking-open-issue': { color: 'd4f5e2', description: 'Non-breaking finding - no fix available, issue opened' },
-  'breaking-rollup': { color: 'e85e2b', description: 'Breaking bump included in a rollup PR' },
-  'breaking-standalone': { color: 'f5854a', description: 'Breaking bump with its own standalone PR' },
-  'breaking-placeholder': { color: 'f8b48a', description: 'Breaking bump - placeholder PR, needs manual attention' },
-  'breaking-open-issue': { color: 'fbd9c5', description: 'Breaking finding - no fix available, issue opened' },
-  'security-rollup': { color: 'e11d48', description: 'Security vulnerability rollup' },
-};
+const SECURITY_REMEDIATION_LABEL = 'Security Remediation';
 
 const ACTION_TYPE_TO_SUFFIX = {
   rollup_pr: 'rollup',
@@ -91,9 +81,6 @@ function getCategory(plan) {
   return `${encodeURIComponent(plan.package.ecosystem || 'unknown')}--${getImpact(plan)}-${getActionSuffix(plan)}`;
 }
 
-function getActionLabel(plan) {
-  return `${getImpact(plan)}-${getActionSuffix(plan)}`;
-}
 
 function buildAlerts(plan) {
   if (plan.package.vulnerabilities) return plan.package.vulnerabilities;
@@ -131,14 +118,16 @@ function transitiveChildrenOf(plan, allPlans) {
 
 // ── GitHub helpers ───────────────────────────────────────────────────────────
 
-async function ensureAllLabels() {
-  for (const [name, { color, description }] of Object.entries(ACTION_LABELS)) {
+async function ensureSecurityRemediationLabel() {
+  const name = SECURITY_REMEDIATION_LABEL;
     try {
       await github.rest.issues.getLabel({ owner, repo, name });
-    } catch {
-      await github.rest.issues.createLabel({ owner, repo, name, color, description });
+  } catch (error) {
+    if (error.status !== 404) throw error;
+    await github.rest.issues.createLabel({
+      owner, repo, name, color: 'e11d48', description: 'Security vulnerability remediation',
+    });
       core.info(`Created label: ${name}`);
-    }
   }
 }
 
@@ -173,10 +162,10 @@ function severityCounts(plans) {
 
 function repositorySummaryMarkdown(plans) {
   const counts = severityCounts(plans);
-  return '## Summary\n\n' +
+  return '<details>\n<summary>Summary</summary>\n\n' +
     `| ${SEVERITY_BUCKETS.join(' | ')} |\n` +
     `|${SEVERITY_BUCKETS.map(() => '---').join('|')}|\n` +
-    `| ${SEVERITY_BUCKETS.map(bucket => counts[bucket]).join(' | ')} |\n\n`;
+    `| ${SEVERITY_BUCKETS.map(bucket => counts[bucket]).join(' | ')} |\n\n</details>\n\n`;
 }
 
 // ── Issue group summary section (per-package overview table) ───────────────
@@ -354,7 +343,7 @@ function buildReconciliationNotesSection(ecosystem) {
   const indentedNotes = notes.join('\n\n').split('\n')
     .map(line => `    ${line}`)
     .join('\n');
-  return `## Reconciliation Notes\n\n${indentedNotes}\n\n`;
+  return `<details>\n<summary>Reconciliation Notes</summary>\n\n${indentedNotes}\n\n</details>\n\n`;
 }
 
 // ── Per-package detail sections ──────────────────────────────────────────────
@@ -473,11 +462,9 @@ function buildCategoryDetailSections(ecosystem, categoryMap, groupPlansSet, grou
 // ── Footer sections ──────────────────────────────────────────────────────────
 
 function mergeOrderSection() {
-  return `## Recommended Merge Order\n\n` +
-    `1. **Non-breaking updates first** - lower risk, no API changes expected\n` +
-    `2. **Validate** in a staging or test environment before merging\n` +
-    `3. **Breaking updates** - review dependent code for API or behavior changes\n` +
-    `4. **Re-run** this workflow after each merge to refresh the tracking issue\n\n`;
+  return `<details>\n<summary>Recommended Merge Order</summary>\n\n` +
+    `Validate updates before merging; merge non-breaking updates first, review breaking changes, and re-run this workflow after each merge.\n\n` +
+    `</details>\n\n`;
 }
 
 function footerSection() {
@@ -570,7 +557,7 @@ function makeGroupPRsResolver(group) {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function createOrUpdateTrackingIssues() {
-  await ensureAllLabels();
+  await ensureSecurityRemediationLabel();
 
   const categoryMap = buildCategoryMap();
   const issueGroups = buildIssueGroups();
@@ -582,21 +569,13 @@ async function createOrUpdateTrackingIssues() {
     const groupPRs = makeGroupPRsResolver(group);
     const body = buildIssueBody(ecosystem, upgradeGroup, group, categoryMap, groupPRs);
 
-    const issueLabels = ['security-rollup'];
-    const seenIssueLabels = new Set();
-    for (const plan of group.plans) {
-      const al = getActionLabel(plan);
-      if (!seenIssueLabels.has(al)) {
-        seenIssueLabels.add(al);
-        issueLabels.push(al);
-      }
-    }
+    const issueLabels = [SECURITY_REMEDIATION_LABEL];
 
     try {
       const existing = await findIssue(title);
       if (existing) {
         await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
-        await github.rest.issues.setLabels({ owner, repo, issue_number: existing.number, labels: issueLabels }).catch(() => {});
+        await github.rest.issues.setLabels({ owner, repo, issue_number: existing.number, labels: issueLabels });
         core.info(`Updated tracking issue #${existing.number}: ${title}`);
         createdIssues[issueKey] = { number: existing.number, url: existing.html_url, title };
       } else {

@@ -1,9 +1,9 @@
 """Populate dependency occurrences and actionable upgrade recommendations."""
-import asyncio
 import logging
 import subprocess
 from pathlib import PurePosixPath
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 from ..models.security_package_triage import (
     TransistiveOccurances,
@@ -11,215 +11,164 @@ from ..models.security_package_triage import (
 )
 from ..models.security_remediation_constants import SecurityRemediationConstants
 from ..models.security_remediation_context import SecurityRemediationCache
-from ..utils.manifest_provider import ManifestProvider
-from .recommendation_resolver.dotnet_recommendation_resolver import (
-    DotNetRecommendationResolver,
-    NuGetResolutionError,
-)
+from ..tools.ecosystem_manifest_tool import ManifestTool
 from .resolver_factory import RelationshipResolverFactory
 logger = logging.getLogger(__name__)
-# Ecosystems supported by manifest relationship resolution.
-SUPPORTED_ECOSYSTEMS = SecurityRemediationConstants.SUPPORTED_ECOSYSTEMS
 # Ecosystems whose transitive introducers can be resolved from a lockfile.
 TRANSITIVE_RESOLVABLE_ECOSYSTEMS = frozenset(
     SecurityRemediationConstants.SUPPORTED_ECOSYSTEMS - {"nuget"}
 )
-NUGET_ECOSYSTEMS = frozenset({"nuget"})
 class PackageRelationshipResolver:
     def __init__(
         self,
         cache: SecurityRemediationCache | None = None,
-        manifest_provider: ManifestProvider | None = None,
+        manifest_tool: ManifestTool | None = None,
         resolver_factory: RelationshipResolverFactory | None = None,
     ):
-        self.manifest_provider = manifest_provider or ManifestProvider(cache=cache)
+        self.manifest_tool = manifest_tool or ManifestTool(cache=cache)
         self.resolver_factory = resolver_factory or RelationshipResolverFactory()
         # Resolvers are cached per repository snapshot/ecosystem/lockfile so a
         # lockfile is fetched and parsed once even when many transitive items
         # share it.
         self._resolvers: dict[tuple, object] = {}
-    def _manifests_to_cache(self, items) -> dict[tuple[str, str], str]:
-        """Map each unique ecosystem/path pair to its manifest path."""
-        manifests: dict[tuple[str, str], str] = {}
-        for item in items:
-            ecosystem = (item.ecosystem or "").lower()
-            for alert in item.vulnerabilities:
-                path = alert.manifest_path
-                if ecosystem == "nuget":
-                    continue
-                if (
-                    ecosystem in {"pip", "pypi"}
-                    and PurePosixPath(path).name == "requirements.txt"
-                ):
-                    path = str(PurePosixPath(path).parent / "requirements.in")
-                if ecosystem in SUPPORTED_ECOSYSTEMS and path:
-                    if (
-                        ecosystem in {"npm", "npm_and_yarn"}
-                        and self.manifest_provider.is_lockfile(path)
-                    ):
-                        path = str(PurePosixPath(path).parent / "package.json")
-                    manifests.setdefault((ecosystem, path), path)
-        return manifests
-    async def cache_manifest(self, owner, repo, items, ref=None) -> None:
-        """Fetch and cache every unique manifest path reported by ``items``.
-        Each manifest is fetched and parsed once per repository snapshot, so later
-        lookups are served from the run cache. A package declared in one of its own
-        manifests is a direct dependency, so ``istransitive`` is cleared for it
-        regardless of what the alert claimed.
+    async def populate(self, owner, repo, items, ref=None, *, npm_packages=None):
+        """Classify each item as direct/transitive and resolve its introducers.
+
+        Dependabot's relationship is authoritative for declaration status. Raw files
+        are passed to ecosystem resolvers only when lockfile relationship data is needed.
         """
-        manifests = self._manifests_to_cache(items)
-        if not manifests:
-            logger.info("No manifests to cache for %s/%s", owner, repo)
-            return
-        keys = sorted(manifests)
-        logger.info(
-            "Caching %d manifest(s) for %s/%s: %s",
-            len(keys),
-            owner,
-            repo,
-            ", ".join(manifests[key] for key in keys),
+        await self.populate_transitive_introducers(
+            owner, repo, items, ref, npm_packages=npm_packages
         )
-        await asyncio.gather(
-            *(
-                self.manifest_provider.declared_packages(
-                    owner, repo, manifests[key], ref, ecosystem=key[0]
-                )
-                for key in keys
-            )
-        )
-    async def populate(self, owner, repo, items, ref=None):
-        await self.cache_manifest(owner, repo, items, ref)
-        nuget_resolver = DotNetRecommendationResolver(
-            manifest_provider=self.manifest_provider,
-        )
-        nuget_recommendations: dict[str, dict[str, str]] = {}
-        for item in items:
-            ecosystem = (item.ecosystem or "").lower()
-            if ecosystem not in SUPPORTED_ECOSYSTEMS:
-                logger.info(
-                    "Skipping %s: ecosystem %s is not supported", item.package, item.ecosystem
-                )
-                continue
-            if ecosystem in NUGET_ECOSYSTEMS:
-                project_path = item.manifest_path or ""
-                if project_path and not item.current_version:
-                    try:
-                        resolved_path = await nuget_resolver.resolve_project_path(
-                            owner, repo, project_path, ref=ref,
-                        )
-                        if resolved_path:
-                            if resolved_path not in nuget_recommendations:
-                                nuget_recommendations[resolved_path] = (
-                                    await nuget_resolver.highest_minor_versions(
-                                        owner=owner,
-                                        repo=repo,
-                                        project_path=resolved_path,
-                                        ref=ref,
-                                    )
-                                )
-                            item.current_version = nuget_recommendations[resolved_path].get(
-                                f"{item.package.casefold()}:requested", "",
-                            )
-                    except NuGetResolutionError as exc:
-                        logger.warning(
-                            "NuGet lookup failed for %s in %s: %s",
-                            item.package, project_path, exc,
-                        )
-                    logger.info(
-                        "NuGet declared version for %s: %s (not restore-verified)",
-                        item.package, item.current_version or "(unresolved)",
-                    )
-                continue
-            package = self.manifest_provider.normalize(item.package, ecosystem)
-            path = item.manifest_path
-            if ecosystem in {"pip", "pypi"} and PurePosixPath(path).name == "requirements.txt":
-                path = str(PurePosixPath(path).parent / "requirements.in")
-            if ecosystem in {"npm", "npm_and_yarn"} and self.manifest_provider.is_lockfile(path):
-                path = str(PurePosixPath(path).parent / "package.json")
-            cache_key = self.manifest_provider.cache.manifest_cache.key(owner, repo, path, ref)
-            cached = self.manifest_provider.cache.manifest_cache.get_packages(cache_key) or {}
-            if path and ecosystem not in cached:
-                logger.warning(
-                    "Manifest %s unavailable; keeping reported relationship for %s",
-                    path,
-                    item.package,
-                )
-                continue
-            declared = cached.get(ecosystem, {})
-            if package in declared:
-                item.istransitive = False
-                if declared[package] and not item.current_version:
-                    item.current_version = declared[package]
-            else:
-                item.istransitive = True
-        await self.populate_transitive_introducers(owner, repo, items, ref)
-    async def populate_transitive_introducers(self, owner, repo, items, ref=None) -> None:
-        """Resolve actionable root introducers for every item still marked transitive.
-        Reuses the resolvers under ``relationship_resolver`` (npm/pip/poetry) so the
+    async def populate_transitive_introducers(
+        self, owner, repo, items, ref=None, *, npm_packages=None
+    ) -> None:
+        """Attach lockfile occurrences (introducer paths) to every resolvable item.
+
+        Reuses the ecosystem resolvers under ``engines/resolvers`` so the
         lockfile graph, not Dependabot's reported relationship, is the source of
-        truth for who introduces a transitive package.
+        truth for who introduces a package.
         """
+        npm_package_names = {
+            name.casefold() for name in (npm_packages or [])
+        }
+        pending: list[tuple[object, object, str, str]] = []
+        names_by_resolver: dict[int, tuple[object, set[str]]] = {}
         for item in items:
             ecosystem = (item.ecosystem or "").lower()
-            if not item.istransitive:
-                continue
-            if ecosystem not in TRANSITIVE_RESOLVABLE_ECOSYSTEMS or ecosystem in NUGET_ECOSYSTEMS:
+            if ecosystem not in TRANSITIVE_RESOLVABLE_ECOSYSTEMS:
                 logger.info(
-                    "Skipping transitive resolution for %s: ecosystem %s is not supported",
+                    "Skipping lockfile resolution for %s: ecosystem %s is not supported",
                     item.package,
                     item.ecosystem,
                 )
                 continue
+            if (
+                ecosystem in {"npm", "npm_and_yarn", "yarn"}
+                and npm_package_names
+                and item.package.casefold() not in npm_package_names
+            ):
+                continue
             path = item.manifest_path
             if not path:
                 continue
-            is_poetry = ecosystem == "poetry"
-            is_python = is_poetry or ecosystem in {"pip", "pypi"}
-            if is_poetry:
-                lock_path = str(PurePosixPath(path).parent / "poetry.lock")
-            elif is_python:
-                lock_path = path
-            elif self.manifest_provider.is_lockfile(path):
-                lock_path = path
-            else:
-                lock_path = str(PurePosixPath(path).parent / "package-lock.json")
-            key = (owner.lower(), repo.lower(), ref, ecosystem, lock_path)
+            lock_path = self.manifest_tool.lockfile_path(ecosystem, path)
+            kind = ManifestTool.relationship_resolver_kind(ecosystem, lock_path)
+            if not kind:
+                logger.debug(
+                    "No relationship resolver for %s (%s); keeping reported relationship for %s",
+                    lock_path, ecosystem, item.package,
+                )
+                continue
+            key = (owner.lower(), repo.lower(), ref, kind, lock_path)
             if key not in self._resolvers:
                 self._resolvers[key] = await self._build_resolver(
-                    owner, repo, ecosystem, lock_path, ref, is_poetry=is_poetry
+                    owner, repo, kind, lock_path, ref
                 )
             resolver = self._resolvers[key]
             if resolver is None:
                 continue
-            result = resolver.resolve(item.package)
+            pending.append((item, resolver, lock_path, kind))
+            names_by_resolver.setdefault(id(resolver), (resolver, set()))[1].add(item.package)
+        # One CLI call per lockfile (npm ls) instead of one per vulnerable package.
+        failed: set[int] = set()
+        for resolver, names in names_by_resolver.values():
+            prefetch = getattr(resolver, "prefetch", None)
+            if prefetch is None:
+                continue
+            try:
+                prefetch(sorted(names))
+            except (subprocess.SubprocessError, OSError, ValueError) as exc:
+                failed.add(id(resolver))
+                logger.warning(
+                    "Cannot resolve dependency paths for %s; keeping reported relationship: %s",
+                    sorted(names), exc,
+                )
+        for item, resolver, lock_path, kind in pending:
+            if id(resolver) in failed:
+                continue
+            try:
+                result = resolver.resolve(item.package)
+            except (subprocess.SubprocessError, OSError, ValueError) as exc:
+                logger.warning(
+                    "Cannot resolve %s from %s; keeping reported relationship: %s",
+                    item.package, lock_path, exc,
+                )
+                continue
+            root = self._root_status(resolver, result, item.package)
+            if kind == "npm" and root is not None:
+                item.istransitive = not root
             self._add_transitive_occurrences(
                 item,
                 result,
                 lock_path,
                 vulnerable_range=item.vulnerablility_version_range,
                 fixed_version=item.vulnerablility_fixed_version,
+                non_root_only=False if kind == "npm" else not item.istransitive,
             )
-    async def _build_resolver(
-        self, owner, repo, ecosystem: str, lock_path: str, ref, *, is_poetry: bool
-    ):
-        """Fetch the lockfile (and companion manifest for poetry) and build a resolver."""
+
+    @staticmethod
+    def _root_status(resolver, result: dict | None, package: str) -> bool | None:
+        """``True`` if the lockfile shows ``package`` as a root dependency, ``False`` if it
+        is present only under other packages, ``None`` when the lockfile lacks it."""
+        if not result:
+            return None
+        target = canonicalize_name(package)
+        direct = getattr(resolver, "direct", None)
+        if "occurrences" in result:
+            occurrences = result["occurrences"]
+            if not occurrences:
+                return None
+            if isinstance(direct, (set, frozenset)):
+                return target in direct
+            return any(occurrence.get("is_root") for occurrence in occurrences)
+        if not result.get("version"):
+            return None
+        return any(
+            canonicalize_name(introducer.get("package") or "") == target
+            for introducer in result.get("introducers", [])
+        )
+
+    async def _build_resolver(self, owner, repo, kind: str, lock_path: str, ref):
+        """Fetch the lockfile (and companion manifest for npm/poetry) and build a resolver."""
         try:
-            text = await self.manifest_provider.get(owner, repo, lock_path, ref)
+            text = await self.manifest_tool.get(owner, repo, lock_path, ref)
             if not text:
                 return None
-            if is_poetry:
-                project_path = str(PurePosixPath(lock_path).parent / "pyproject.toml")
-                project_text = await self.manifest_provider.get(owner, repo, project_path, ref)
+            if kind in {"npm", "poetry"}:
+                companion = "package.json" if kind == "npm" else "pyproject.toml"
+                project_path = str(PurePosixPath(lock_path).parent / companion)
+                project_text = await self.manifest_tool.get(owner, repo, project_path, ref)
                 if not project_text:
                     return None
                 return await self.resolver_factory.create(
-                    ecosystem,
+                    kind,
                     text,
                     project_text=project_text,
                 )
-            return await self.resolver_factory.create(ecosystem, text)
+            return await self.resolver_factory.create(kind, text)
         except (ValueError, KeyError, TypeError, subprocess.SubprocessError, OSError) as exc:
-            logger.warning("Cannot build resolver for %s from %s: %s", ecosystem, lock_path, exc)
+            logger.warning("Cannot build %s resolver from %s: %s", kind, lock_path, exc)
             return None
     @staticmethod
     def _add_transitive_occurrences(
@@ -229,12 +178,13 @@ class PackageRelationshipResolver:
         *,
         vulnerable_range: str | None = None,
         fixed_version: str | None = None,
+        non_root_only: bool = False,
     ) -> None:
         """Translate a resolver result into ``TransistiveOccurances`` on ``item``.
-        Only occurrences whose installed version falls inside the alert's
-        vulnerable range are recorded, so unrelated (already-fixed or
+        Occurrences covered by any advisory are recorded, so unrelated (already-fixed or
         never-vulnerable) installations of the same package elsewhere in the
-        tree don't flood the occurrence list.
+        tree don't flood the occurrence list. With ``non_root_only`` (direct items) the
+        root install is skipped and only copies pulled in by other packages are kept.
         """
         if not result:
             return
@@ -244,9 +194,41 @@ class PackageRelationshipResolver:
             occurrences = [result]
         else:
             occurrences = []
+        # A single resolved installation is useful even when it is no longer affected
+        # by the advisory. Do not select arbitrarily when several versions are installed.
+        if item.istransitive and not item.current_version:
+            resolved_versions = {occurrence.get("version") for occurrence in occurrences
+                                 if occurrence.get("version")}
+            if len(resolved_versions) == 1:
+                item.current_version = next(iter(resolved_versions))
+        if non_root_only:
+            # Preserve the installed direct version before excluding root occurrences.
+            # Python lockfiles contain one resolved version even when no nested copy exists.
+            if not item.current_version and result.get("version"):
+                item.current_version = result["version"]
+            # Only npm can nest a second copy of a direct package; Python lockfiles
+            # hold one version per package, so they contribute nothing here.
+            target = canonicalize_name(item.package)
+            occurrences = [
+                occurrence for occurrence in occurrences
+                if occurrence.get("is_root") is False
+                and any(
+                    canonicalize_name(introducer.get("package") or "") != target
+                    for introducer in occurrence.get("introducers", [])
+                )
+            ]
+        # Evaluate each advisory separately so missing/unparseable ranges
+        # use their own fixed-version fallback, not another advisory's range.
+        advisories = [
+            (alert.vulnerable_range, alert.first_patched)
+            for alert in item.vulnerabilities
+        ] or [(vulnerable_range, fixed_version)]
         for occurrence in occurrences:
-            if not PackageRelationshipResolver._is_vulnerable_occurrence(
-                occurrence.get("version"), vulnerable_range, fixed_version
+            if not any(
+                PackageRelationshipResolver._is_vulnerable_occurrence(
+                    occurrence.get("version"), affected_range, patched_version,
+                )
+                for affected_range, patched_version in advisories
             ):
                 continue
             introducers = [
@@ -261,11 +243,32 @@ class PackageRelationshipResolver:
                 version=occurrence.get("version") or "",
                 introducers=introducers,
                 manifest_path=lock_path,
+                paths=PackageRelationshipResolver._dependency_paths(occurrence.get("paths", [])),
             )
             if transitive_occurrence not in item.transitive_dependency_occurrences:
                 item.transitive_dependency_occurrences.append(transitive_occurrence)
-            if occurrence.get("version") and not item.current_version:
+            if occurrence.get("version") and not item.current_version and not non_root_only:
                 item.current_version = occurrence["version"]
+    @staticmethod
+    def _dependency_paths(raw_paths) -> list[list[TransistiveSourcePackage]]:
+        paths = []
+        for raw_path in raw_paths:
+            path = []
+            for node in raw_path:
+                if isinstance(node, dict):
+                    name, version = node.get("package"), node.get("version", "")
+                elif isinstance(node, str) and "@" in node[1:]:
+                    name, version = node.rsplit("@", 1)
+                else:
+                    break
+                if not name:
+                    break
+                path.append(TransistiveSourcePackage(package=name, version=version))
+            else:
+                if path:
+                    paths.append(path)
+        return paths
+
     @staticmethod
     def _is_vulnerable_occurrence(
         installed_version: str | None,

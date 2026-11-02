@@ -6,6 +6,9 @@
 .Trashes
 ehthumbs.db
 Thumbs.db
+Thumbs.db:encryptable
+[Dd]esktop.ini
+$RECYCLE.BIN/
 
 # Editor files
 *.swp
@@ -23,8 +26,36 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local Python environments (Windows Scripts/ and Unix bin/)
+.venv/
+venv/
+
+# Local environment variables; keep example files available to Git
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Installed JavaScript dependencies
+node_modules/
 
 # Temporary files
 *.tmp
 *.temp
 security-remediation-agent/sandbox/
+.test-tmp*/
+
+# Generated remediation reports (keep Renovate configuration trackable)
+remediation-plan.json
+orchestrator-output.json
+workflow-plans.json
+rollup-results.json
+rollup-output.json

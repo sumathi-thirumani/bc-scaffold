@@ -1,27 +1,9 @@
 import logging
 import re
 
-from pydantic import BaseModel
+from ....models.gh.pull_request_metadata import VersionBump
 
 logger = logging.getLogger(__name__)
-
-
-class VersionBump(BaseModel):
-    package: str
-    from_version: str
-    to_version: str
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, dict):
-            return self.model_dump() == other
-
-        if isinstance(other, VersionBump):
-            return self.model_dump() == other.model_dump()
-
-        return super().__eq__(other)
-
-    def __iter__(self):
-        yield from self.model_dump().items()
 
 
 def _clean_version(version: str) -> str:
@@ -40,8 +22,9 @@ def _clean_version(version: str) -> str:
     # Remove markdown/backticks/quotes.
     version = version.strip("`'\"")
 
-    # Remove common version/range prefixes.
-    version = version.lstrip("vV^~>=< ")
+    # Remove one recognized version/range prefix rather than treating its
+    # characters as an arbitrary set.
+    version = re.sub(r"^(?:>=|<=|[vV~^><=])\s*", "", version, count=1)
 
     # Remove punctuation accidentally captured from prose.
     version = version.rstrip(".,;:)")
@@ -152,7 +135,7 @@ def _extract_dependabot_body(body: str) -> list[VersionBump]:
     standard_pattern = re.compile(
         r"(?:Bumps?|Updates?)\s+"
         r"(?:\[)?"
-        r"`?([\w@/.\-]+)`?"
+        r"`?([\w@/.:+-]+)`?"
         r"(?:\])?"
         r"(?:\([^)]*\))?"
         r"\s+"
@@ -186,7 +169,7 @@ def _extract_dependabot_body(body: str) -> list[VersionBump]:
     grouped_pattern = re.compile(
         r"^\|?\s*"
         r"(?:\[)?"
-        r"`?([\w@/.\-]+)`?"
+        r"`?([\w@/.:+-]+)`?"
         r"(?:\])?"
         r"(?:\([^)]*\))?"
         r"\s*\|\s*"
@@ -225,20 +208,24 @@ def _extract_dependabot_body(body: str) -> list[VersionBump]:
     #
     # axios from 0.28.1 to 1.20.0
     #
-    # Versions must begin with a number. This prevents false positives
-    # such as:
+    # Match standalone package-update lines only. Requiring the package to
+    # start the line avoids interpreting prose such as "The API changed..."
+    # as a package named "changed". Versions must begin with a number, which
+    # also rejects license and identifier changes such as:
     #
     # changed from BSD-3-Clause to MIT
     # usage from toFormData to avoid
     #
     generic_pattern = re.compile(
-        r"([\w@/.\-]+)\s+"
+        r"^\s*(?:[-*]\s*)?"
+        r"(?!(?:changed|change|updated|update|upgraded|upgrade|bumped|bump)\b)"
+        r"([\w@/.:+-]+)\s+"
         r"from\s+"
         r"`?([0-9][0-9A-Za-z._+-]*)`?"
         r"\s+"
         r"to\s+"
         r"`?([0-9][0-9A-Za-z._+-]*)`?",
-        re.IGNORECASE,
+        re.IGNORECASE | re.MULTILINE,
     )
 
     for match in generic_pattern.finditer(body):
@@ -342,7 +329,7 @@ def _extract_renovate_body(body: str) -> list[VersionBump]:
     return results
 
 
-def extract_from_body(
+def _extract_from_body(
     category: str,
     body: str,
 ) -> list[VersionBump]:
@@ -360,7 +347,7 @@ def extract_from_body(
     return []
 
 
-def extract_from_title(
+def _extract_from_title(
     title: str,
 ) -> list[VersionBump]:
     """
@@ -413,22 +400,24 @@ def get_version_bumps(
 
     normalized_user = user.lower()
 
-    if "dependabot" in normalized_user:
+    if normalized_user.startswith("dependabot"):
         category = "dependabot"
-    elif "renovate" in normalized_user:
+    elif normalized_user.startswith("renovate"):
         category = "renovatebot"
     else:
-        category = "unknown"
+        # Only known dependency-updater identities should be trusted to
+        # produce package changes from an otherwise ambiguous title.
+        logger.debug("Skipping version-bump parsing for unsupported PR author")
+        return []
 
-    bumps = extract_from_body(
+    bumps = _extract_from_body(
         category,
         body,
     )
-
 
     if bumps:
         return bumps
 
     logger.debug("No version bumps found in PR body; falling back to PR title")
 
-    return extract_from_title(title)
+    return _extract_from_title(title)

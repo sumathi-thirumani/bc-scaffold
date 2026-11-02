@@ -13,12 +13,14 @@ class CodescanningAlert(BaseModel):
     rule_id: str = ""
     tool: str = ""
     ecosystem: str = ""
+    location_path: str = ""
 
     @classmethod
     def from_codescanning_alert(cls, alert: dict[str, Any]) -> "CodescanningAlert | None":
         rule = alert.get("rule") or {}
         tool = alert.get("tool") or {}
-        location = alert.get("location") or {}
+        instance = alert.get("most_recent_instance") or {}
+        location = instance.get("location") or alert.get("location") or {}
         if not rule.get("name"):
             return None
 
@@ -29,5 +31,6 @@ class CodescanningAlert(BaseModel):
             severity=(alert.get("security_severity_level") or UNKNOWN_SEVERITY).lower(),
             rule_id=rule.get("id") or "",
             tool=tool.get("name", ""),
-            ecosystem=location.get("path", ""),
+            ecosystem=alert.get("ecosystem") or "",
+            location_path=location.get("path") or "",
         )

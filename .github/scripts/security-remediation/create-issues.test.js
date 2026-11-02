@@ -42,6 +42,9 @@ test('tracking issues group by ecosystem and major package or minor-patch, acros
 
   const created = [];
   const updated = [];
+  const labelUpdates = [];
+  const checkedLabels = [];
+  const createdLabels = [];
   let output;
   const existingTitle = '[Security Remediation] [npm] [Major(axios)]';
   const github = { rest: {
@@ -49,7 +52,9 @@ test('tracking issues group by ecosystem and major package or minor-patch, acros
       { title: existingTitle, number: 42, html_url: 'https://example.test/42' },
     ] } }) },
     issues: {
-      getLabel: async () => ({}), setLabels: async () => ({}), addLabels: async () => ({}),
+      getLabel: async args => { checkedLabels.push(args.name); throw { status: 404 }; },
+      createLabel: async args => { createdLabels.push(args.name); },
+      setLabels: async args => { labelUpdates.push(args.labels); },
       update: async args => { updated.push(args); },
       create: async args => { created.push(args); return { data: { number: created.length, html_url: 'https://example.test/issue' } }; },
     },
@@ -65,6 +70,10 @@ test('tracking issues group by ecosystem and major package or minor-patch, acros
     name => { assert.equal(name, 'fs'); return fakeFs; }, { env: { BASE_BRANCH: 'main' } }, console,
   );
 
+  assert.deepEqual(checkedLabels, ['Security Remediation']);
+  assert.deepEqual(createdLabels, ['Security Remediation']);
+  assert.deepEqual(labelUpdates, [['Security Remediation']]);
+  assert.ok(created.every(issue => JSON.stringify(issue.labels) === JSON.stringify(['Security Remediation'])));
   assert.equal(updated.length, 1);
   assert.equal(updated[0].issue_number, 42);
   assert.equal(created.length, 4);
@@ -75,15 +84,18 @@ test('tracking issues group by ecosystem and major package or minor-patch, acros
 
   const minor = created.find(i => i.title === '[Security Remediation] [npm] [Minor-Patch]');
   assert.ok(minor);
-  assert.match(minor.body, /## Summary\n/);
+  assert.match(minor.body, /<details>\n<summary>Summary<\/summary>\n/);
   assert.doesNotMatch(minor.body, /Open security alerts|Open code scanning alerts/);
   assert.match(minor.body, /`postcss`/);
   assert.match(minor.body, /`nanoid`/);
   assert.doesNotMatch(minor.body, /### `(?:axios|vite|cryptography)`/);
   assert.match(minor.body, /\[#10\]\(https:\/\/example\.test\/10\)/);
-  assert.match(minor.body, /## Reconciliation Notes\n\n    Manifest: package\.json/);
+  assert.match(minor.body, /<details>\n<summary>Reconciliation Notes<\/summary>\n\n    Manifest: package\.json/);
   assert.doesNotMatch(minor.body, /DotnetSecurityFailures/);
-  assert.ok(minor.body.indexOf('## Reconciliation Notes') >
+  assert.match(minor.body, /<summary>Reconciliation Notes<\/summary>[\s\S]*axios 1\.0\.0 \u2192 2\.0\.0[\s\S]*?<\/details>/);
+  assert.match(minor.body, /<details>\n<summary>Recommended Merge Order<\/summary>\n\nValidate updates before merging;[^\n]+\n\n<\/details>/);
+  assert.doesNotMatch(minor.body, /<details open|## Recommended Merge Order|## Reconciliation Notes/);
+  assert.ok(minor.body.indexOf('<summary>Reconciliation Notes</summary>') >
     minor.body.indexOf('## Remediation Pull Requests'));
 
   const pipIssue = created.find(i => i.title.includes('[pip]'));
@@ -91,10 +103,10 @@ test('tracking issues group by ecosystem and major package or minor-patch, acros
   assert.ok(pipIssue.body.includes('- fastapi 0.125.0 → starlette 0.50.0'));
   assert.ok(pipIssue.body.includes('- fastapi-sqlalchemy 0.2.1 → starlette 0.50.0'));
   assert.match(pipIssue.body, /\[#20\]\(https:\/\/example\.test\/20\)/);
-  assert.doesNotMatch(pipIssue.body, /## Reconciliation Notes/);
+  assert.doesNotMatch(pipIssue.body, /<summary>Reconciliation Notes<\/summary>/);
 
   const nugetIssue = created.find(i => i.title.includes('[nuget]'));
-  assert.doesNotMatch(nugetIssue.body, /## Reconciliation Notes|DotnetSecurityFailures/);
+  assert.doesNotMatch(nugetIssue.body, /<summary>Reconciliation Notes<\/summary>|DotnetSecurityFailures/);
 
   assert.deepEqual(output.summary, remediationPlan.summary);
   assert.equal(output.stats.total_reviewed_prs, 9);
@@ -154,7 +166,7 @@ test('creates one tracking issue per package bundle when bundle metadata is pres
   assert.equal(output.stats.total_issues_created, 2);
 });
 
-test('Summary section is renamed and shows a severity count table (critical/high/medium/low)', async () => {
+test('Summary section is collapsed and preserves severity counts', async () => {
   const alert = (cvss, ghsaSuffix) => ({
     ghsa_id: `GHSA-${ghsaSuffix}`, cve_id: null, url: `https://github.com/advisories/GHSA-${ghsaSuffix}`,
     summary: 'test vuln', cvss, vulnerable_range: '<1.0.0', first_patched: '1.0.0',
@@ -201,8 +213,9 @@ test('Summary section is renamed and shows a severity count table (critical/high
   );
 
   const body = created[0].body;
-  assert.match(body, /## Summary\n/);
-  assert.doesNotMatch(body, /## Repository Summary/);
+  assert.match(body, /<details>\n<summary>Summary<\/summary>\n/);
+  assert.doesNotMatch(body, /## Repository Summary|## Summary|<details open/);
+  assert.match(body, /<summary>Summary<\/summary>\n\n\| Critical \| High \| Medium \| Low \|\n[^\n]+\n\| 1 \| 2 \| 1 \| 1 \|\n\n<\/details>/);
   assert.match(body, /\| Critical \| High \| Medium \| Low \|/);
   assert.match(body, /\| 1 \| 2 \| 1 \| 1 \|/);
 });

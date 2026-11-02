@@ -1417,6 +1417,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "rich" },
+    { name = "semantic-version" },
     { name = "spdx-tools" },
     { name = "structlog" },
     { name = "tomli" },
@@ -1438,6 +1439,11 @@ mcp = [
     { name = "httpx" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4.4.0" },
@@ -1457,6 +1463,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31.0" },
     { name = "rich", specifier = ">=13.7.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5.0" },
+    { name = "semantic-version", specifier = ">=2.10.0" },
     { name = "spdx-tools", specifier = ">=0.8.3" },
     { name = "structlog", specifier = ">=24.1.0" },
     { name = "tomli", specifier = ">=2.4.1" },
@@ -1464,6 +1471,9 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'agent'", specifier = ">=0.30.0" },
 ]
 provides-extras = ["dev", "agent", "mcp"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
 
 [[package]]
 name = "semantic-version"

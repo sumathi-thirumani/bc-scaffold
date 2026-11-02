@@ -1,5 +1,3 @@
-import os
-import re
 from collections.abc import Iterable
 from typing import Any
 
@@ -9,12 +7,15 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..models.gh.vulnerability_alert import VulnerabilityAlert
 from ..models.security_remediation_constants import SecurityRemediationConstants
+from .utils.github_api import (
+    GITHUB_API_VERSION as GITHUB_API_VERSION,
+    PER_PAGE,
+    fetch_paginated_results,
+    get_github_headers,
+    get_next_link as get_next_link,
+)
 
 DEFAULT_SEVERITIES = SecurityRemediationConstants.DEFAULT_SEVERITIES
-
-GITHUB_API_VERSION = "2022-11-28"
-PER_PAGE = 100
-NEXT_LINK_PATTERN = re.compile(r'<([^>]+)>;\s*rel="next"')
 
 
 def normalize_severity(severity: str) -> str:
@@ -37,7 +38,7 @@ class DependabotAlertInput(BaseModel):
             return severities
 
         normalized = [normalize_severity(severity) for severity in severities]
-        invalid_severities = set(normalized) -DEFAULT_SEVERITIES
+        invalid_severities = set(normalized) - DEFAULT_SEVERITIES
         if invalid_severities:
             valid_values = ", ".join(sorted(DEFAULT_SEVERITIES))
             invalid_values = ", ".join(sorted(invalid_severities))
@@ -54,10 +55,7 @@ async def get_dependabot_alerts(
     repo: str,
     severities: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise RuntimeError("GITHUB_TOKEN environment variable is required")
-
+    headers = get_github_headers()
     severity_filter = {normalize_severity(value) for value in (severities or DEFAULT_SEVERITIES)}
     invalid_severities = severity_filter - DEFAULT_SEVERITIES
     if invalid_severities:
@@ -69,45 +67,20 @@ async def get_dependabot_alerts(
         )
 
     url = f"https://api.github.com/repos/{owner}/{repo}/dependabot/alerts"
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": GITHUB_API_VERSION,
-    }
-
     params = {
         "state": "open",
         "severity": ",".join(sorted(severity_filter)),
         "per_page": PER_PAGE,
     }
-
-    alerts: list[dict[str, Any]] = []
-
-    async with httpx.AsyncClient(
+    return await fetch_paginated_results(
+        url,
+        params,
         headers=headers,
-        timeout=httpx.Timeout(30.0),
-    ) as client:
-        while True:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-
-            data = response.json()
-            alerts.extend(data)
-
-            next_url = get_next_link(response.headers.get("Link", ""))
-            if not next_url:
-                break
-
-            url = next_url
-            params = None
-
-    return alerts
-
-
-def get_next_link(link_header: str) -> str | None:
-    match = NEXT_LINK_PATTERN.search(link_header)
-    return match.group(1) if match else None
+        owner=owner,
+        repo=repo,
+        resource="Dependabot alerts",
+        client_factory=httpx.AsyncClient,
+    )
 
 
 async def normalize(alerts: Iterable[dict[str, Any]]) -> list[VulnerabilityAlert]:

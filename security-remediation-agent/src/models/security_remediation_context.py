@@ -19,9 +19,6 @@ class ManifestCache:
 
     def __post_init__(self) -> None:
         self._entries: dict[tuple[str, str, str | None, str], str | None] = {}
-        self._packages: dict[
-            tuple[str, str, str | None, str], dict[str, dict[str, str | None]]
-        ] = {}
 
     @staticmethod
     def key(owner: str, repo: str, path: str, ref: str | None) -> tuple[str, str, str | None, str]:
@@ -36,23 +33,12 @@ class ManifestCache:
     def set(self, key: tuple[str, str, str | None, str], text: str | None) -> None:
         self._entries[key] = text
 
+    def discard(self, key: tuple[str, str, str | None, str]) -> None:
+        self._entries.pop(key, None)
+
     def clear(self) -> None:
         """Discard cached manifests, for example before starting another run."""
         self._entries.clear()
-        self._packages.clear()
-
-    def get_packages(
-        self, key: tuple[str, str, str | None, str]
-    ) -> dict[str, str | None] | None:
-        return self._packages.get(key)
-
-    def set_packages(
-        self,
-        key: tuple[str, str, str | None, str],
-        ecosystem: str,
-        packages: dict[str, str | None],
-    ) -> None:
-        self._packages.setdefault(key, {})[ecosystem.lower()] = packages
 
 
 @dataclass
@@ -80,6 +66,9 @@ class ManifestLockCache:
     def set(self, key: tuple[str, str, str | None, str], text: str | None) -> None:
         self._entries[key] = text
 
+    def discard(self, key: tuple[str, str, str | None, str]) -> None:
+        self._entries.pop(key, None)
+
     def clear(self) -> None:
         self._entries.clear()
 
@@ -100,4 +89,5 @@ class SecurityRemediationContext:
     total_reviewed_prs: int = 0
     total_ignored_prs: int = 0
     total_remediation_prs: int = 0
+    collection_errors: dict[str, str] = field(default_factory=dict)
     vulnerabilities_summary: VulnerabilitySummary = field(default_factory=VulnerabilitySummary)

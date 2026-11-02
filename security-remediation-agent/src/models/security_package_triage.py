@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
+from packaging.version import InvalidVersion, Version
+
 from .gh.pull_request_metadata import PullRequestMetadata
 
 from .gh.vulnerability_alert import VulnerabilityAlert
@@ -26,10 +28,11 @@ class TransistiveSourcePackage:
 @dataclass
 class TransistiveOccurances:
     package: str
-    version: str    
+    version: str
     introducers: list[TransistiveSourcePackage] = field(default_factory=list)
     classification: OccurrenceClassification = OccurrenceClassification.TRANSITIVE
     manifest_path: str | None = None
+    paths: list[list[TransistiveSourcePackage]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.introducers:
@@ -59,14 +62,48 @@ def is_direct_package(occurrences: list) -> bool:
 class PackageUpgradeRecommendation:
     package: str
     from_version: str
-    to_version: str
-    requires_verification: bool = False
+    minimum_patched_version: str = ""
+    highest_stable_version: str = ""
+    compatible_version: str = ""
     source: Optional[str] = None
     pr_number: Optional[int] = None
     pull_url: Optional[str] = None
     pr_branch: Optional[str] = None
-    minimum_upgradable_version: str = ""
-    candidate_versions: list[str] = field(default_factory=list)
+    qualifying_upgrade_versions: list[str] = field(default_factory=list)
+    requires_verification: bool = False
+    verified_version: str | None = None
+    verification_status: str = "requires_validation"
+    verification_method: str | None = None
+    verification_notes: str = ""
+
+    def __post_init__(self) -> None:
+        """Derive bounds from stable qualifying upgrades, not all registry releases.
+
+        compatible_version is the lowest qualifying upgrade in the current major.
+        """
+        versions = {}
+        try:
+            current = Version(self.from_version)
+        except InvalidVersion:
+            current = None
+        for raw in self.qualifying_upgrade_versions:
+            try:
+                parsed = Version(raw)
+            except InvalidVersion:
+                continue
+            if parsed.is_prerelease or parsed.is_devrelease:
+                continue
+            if current is not None and parsed <= current:
+                continue
+            versions.setdefault(parsed, raw)
+        ordered = sorted(versions)
+        self.qualifying_upgrade_versions = [versions[version] for version in ordered]
+        self.minimum_patched_version = self.qualifying_upgrade_versions[0] if ordered else ""
+        self.highest_stable_version = self.qualifying_upgrade_versions[-1] if ordered else ""
+        self.compatible_version = next(
+            (versions[version] for version in ordered if current is not None and version.major == current.major),
+            "",
+        )
 
 @dataclass
 class SecurityPackageTriage:
@@ -77,16 +114,16 @@ class SecurityPackageTriage:
     current_version: str = ""
     ecosystem: str = ""
     manifest_path: str | None = None
-    #derivative information
+    #derivative information (highest severity)
     severity: str = ""
 
     #Source: Vulnerability alert and code scanning
     vulnerabilities: list[VulnerabilityAlert] = field(default_factory=list)
     scanning_alerts: list[Any] = field(default_factory=list)
 
-    istransitive: bool = False    
+    istransitive: bool = False
 
-    # component relationship    
+    # component relationship
     transitive_dependency_occurrences: list[TransistiveOccurances] = field(default_factory=list)
     package_upgrade_recommendations: list[PackageUpgradeRecommendation] = field(default_factory=list)
 

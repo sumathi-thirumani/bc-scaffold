@@ -5,8 +5,9 @@ import logging
 import re
 from typing import Any
 
-from ..models.remediation_plan import RemeditionPackage, RemeditionPackageBundle
-from ..utils.manifest_provider import ManifestProvider
+from ..models.remediation_plan import RemeditionPackageBundle
+from ..models.security_package_triage import SecurityPackageTriage
+from ..tools.ecosystem_manifest_tool import ManifestTool
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +82,12 @@ class RemediationGroupingEngine:
 
     @staticmethod
     def group_packages_by_package_rules(
-        packages: list[RemeditionPackage],
+        packages: list[SecurityPackageTriage],
         config: dict[str, Any] | str | None,
     ) -> list[RemeditionPackageBundle]:
-        """Group RemeditionPackage entries into bundles using Renovate packageRules.
+        """Group SecurityPackageTriage entries into bundles using Renovate packageRules.
 
-        Each package's `remediation_package` name is checked against each rule's
+        Each package's `package` name is checked against each rule's
         `matchPackageNames`. The first matching rule's `groupName` becomes the bundle
         name. Packages that don't match any rule fall back to a "default" group.
         """
@@ -97,12 +98,12 @@ class RemediationGroupingEngine:
 
         rules = config.get("packageRules", []) if isinstance(config, dict) else []
 
-        grouped: dict[str, list[RemeditionPackage]] = {}
+        grouped: dict[str, list[SecurityPackageTriage]] = {}
         for package in packages:
             matched_group = default_group_name
             for rule in rules:
                 match_names = rule.get("matchPackageNames", [])
-                if package.remediation_package in match_names:
+                if package.package in match_names:
                     matched_group = rule.get("groupName", default_group_name)
                     break
             grouped.setdefault(matched_group, []).append(package)
@@ -124,18 +125,25 @@ class RemediationGroupingEngine:
         ref: str | None = None,
         *,
         paths: list[str] | None = None,
-    ) -> dict[str, Any]:
+        manifest_tool: ManifestTool | None = None,
+    ) -> dict[str, Any] | None:
         """Fetch and parse the repository's renovate.json5 (or renovate.json) config."""
-        manifest_provider = ManifestProvider()
+        if manifest_tool is None:
+            logger.debug("fetch_renovate_config created its own ManifestTool; cache is not shared")
+            manifest_tool = ManifestTool()
         candidates = paths or [
             "renovate.json5",
             ".github/renovate.json5",
             "renovate.json",
             ".github/renovate.json",
+            ".renovaterc",
+            ".renovaterc.json",
+            ".gitlab/renovate.json",
+            ".gitlab/renovate.json5",
         ]
 
         for path in candidates:
-            content = await manifest_provider.get(owner, repo, path, ref)
+            content = await manifest_tool.get(owner, repo, path, ref)
             if content is None:
                 continue
 
@@ -148,19 +156,22 @@ class RemediationGroupingEngine:
                 # trying other candidate paths.
                 raise ValueError(f"Failed to parse renovate config at {owner}/{repo}:{path}") from exc
 
-        return {}
+        return None
 
     @staticmethod
     async def group_packages_from_github(
-        packages: list[RemeditionPackage],
+        packages: list[SecurityPackageTriage],
         owner: str,
         repo: str,
         ref: str | None = None,
         *,
         paths: list[str] | None = None,
-    ) -> list[RemeditionPackageBundle]:
+        manifest_tool: ManifestTool | None = None,
+    ) -> list[RemeditionPackageBundle] | None:
         """Fetch renovate.json5 from GitHub, then group packages by its packageRules."""
-        config = await RemediationGroupingEngine.fetch_renovate_config(owner, repo, ref, paths=paths)
-        if not config:
-            logger.warning("No Renovate config found for %s/%s; packages will not be grouped by rules", owner, repo)
-        return RemediationGroupingEngine.group_packages_by_package_rules(packages, config        )
+        config = await RemediationGroupingEngine.fetch_renovate_config(
+            owner, repo, ref, paths=paths, manifest_tool=manifest_tool
+        )
+        if config is None:
+            return None
+        return RemediationGroupingEngine.group_packages_by_package_rules(packages, config)

@@ -10,11 +10,13 @@ from ..models.security_package_triage import (
     PackageUpgradeRecommendation,
     SecurityPackageTriage,
 )
-from .recommendation_resolver.pip_parent_version_resolver import (
+from .resolvers.recommendation_resolver.pip_recommendation_resolver import (
     PipParentVersionResolver,
 )
-from .resolver_factory import RecommendationResolverFactory
-from .version_resolver.npm_parent_version_resolver import NpmParentVersionResolver
+from .resolvers.recommendation_resolver.npm_recommendation_resolver import (
+    NpmParentVersionResolver,
+)
+from .resolvers.recommendation_resolver_factory import RecommendationResolverFactory
 
 logger = logging.getLogger(__name__)
 
@@ -77,16 +79,25 @@ class PackageRecommendationResolver:
             return
 
         recommendations = []
+        parents = {}
+        paths_by_parent = {}
         for occurrence in triage.transitive_dependency_occurrences:
             for introducer in occurrence.introducers:
-                recommendation = await self._resolve_parent_recommendation(
-                    triage,
-                    introducer.package,
-                    introducer.version,
-                    version_resolver,
-                )
-                if recommendation is not None:
-                    recommendations.append(recommendation)
+                key = (introducer.package, introducer.version)
+                parents[key] = introducer
+                paths = paths_by_parent.setdefault(key, [])
+                for path in occurrence.paths:
+                    if path and (path[0].package, path[0].version) == key:
+                        rendered = [{"package": node.package, "version": node.version} for node in path]
+                        if rendered not in paths:
+                            paths.append(rendered)
+        for (parent, current), introducer in parents.items():
+            recommendation = await self._resolve_parent_recommendation(
+                triage, parent, current, version_resolver,
+                dependency_paths=paths_by_parent[(parent, current)],
+            )
+            if recommendation is not None:
+                recommendations.append(recommendation)
 
         triage.package_upgrade_recommendations = recommendations
         triage.is_pull_available = False
@@ -112,11 +123,7 @@ class PackageRecommendationResolver:
             PackageUpgradeRecommendation(
                 package=version_bump.package,
                 from_version=version_bump.from_version,
-                to_version=version_bump.to_version,
-                minimum_upgradable_version=self._non_breaking_version(
-                    version_bump.from_version,
-                    version_bump.to_version,
-                ),
+                qualifying_upgrade_versions=[version_bump.to_version],
                 source="dependabot_pr",
                 pr_number=pull_request.pr_number,
                 pull_url=pull_request.pull_url,
@@ -133,6 +140,8 @@ class PackageRecommendationResolver:
         parent: str,
         current_parent_version: str,
         version_resolver: NpmParentVersionResolver | PipParentVersionResolver,
+        *,
+        dependency_paths: list[list[dict[str, str]]] | None = None,
     ) -> PackageUpgradeRecommendation | None:
         if isinstance(version_resolver, NpmParentVersionResolver):
             resolution = await version_resolver.resolve(
@@ -141,6 +150,7 @@ class PackageRecommendationResolver:
                 triage.vulnerablility_version_range,
                 current_parent_version=current_parent_version,
                 fixed_version=triage.vulnerablility_fixed_version,
+                dependency_paths=dependency_paths,
             )
             source = resolution.source or "npm_registry"
         else:
@@ -149,34 +159,20 @@ class PackageRecommendationResolver:
                 triage.package,
                 triage.vulnerablility_fixed_version,
                 current_parent_version=current_parent_version,
+                dependency_paths=dependency_paths,
+                vulnerable_range=triage.vulnerablility_version_range,
             )
-            source = "pypi_verified"
+            source = resolution.source
 
         if not resolution.resolved or not resolution.resolved_version:
             return None
         return PackageUpgradeRecommendation(
             package=parent,
             from_version=current_parent_version,
-            to_version=resolution.resolved_version,
-            minimum_upgradable_version=(
-                getattr(resolution, "minimum_upgradable_version", None)
-                or ""
-            ),
+            qualifying_upgrade_versions=list(resolution.qualifying_upgrade_versions),
             requires_verification=getattr(resolution, "requires_verification", False),
             source=source,
-            candidate_versions=list(getattr(resolution, "candidates_considered", [])),
         )
-
-    @staticmethod
-    def _non_breaking_version(current_version: str, candidate_version: str) -> str:
-        try:
-            current = Version(current_version.lstrip("vV"))
-            candidate = Version(candidate_version.lstrip("vV"))
-        except InvalidVersion:
-            return ""
-        return candidate_version if candidate.major == current.major else ""
-
-
 
     def filter_remediation_pull_requests(
         self,

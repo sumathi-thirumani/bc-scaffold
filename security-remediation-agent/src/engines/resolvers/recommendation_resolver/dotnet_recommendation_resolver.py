@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 
 import httpx
 
-from ...utils.manifest_provider import ManifestProvider
+from ....tools.ecosystem_manifest_tool import ManifestTool
 
 logger = logging.getLogger(__name__)
 PROJECT_SUFFIXES = {".csproj", ".fsproj", ".vbproj"}
@@ -30,15 +30,18 @@ def stable_version_key(value: str) -> tuple[int, int, int, int]:
 
 
 class DotNetRecommendationResolver:
-    def __init__(self, manifest_provider=None, client=None) -> None:
-        self._manifest_provider = manifest_provider or ManifestProvider()
+    def __init__(self, manifest_tool=None, client=None) -> None:
+        self._manifest_tool = manifest_tool or ManifestTool()
         self._client = client
 
     async def resolve_project_path(self, owner, repo, manifest_path, *, ref=None):
         path = PurePosixPath(manifest_path.replace("\\", "/").strip("/"))
         if path.suffix.lower() in PROJECT_SUFFIXES:
             return path.as_posix()
-        entries = await self._manifest_provider.repository_tree(owner, repo, ref)
+        try:
+            entries = await self._manifest_tool.repository_tree(owner, repo, ref)
+        except (ValueError, httpx.HTTPError) as exc:
+            raise NuGetResolutionError(f"Cannot list repository files: {exc}") from exc
         projects = [PurePosixPath(e["path"]) for e in entries
                     if PurePosixPath(e["path"]).suffix.lower() in PROJECT_SUFFIXES]
         same = [p for p in projects if p.parent == path.parent]
@@ -52,7 +55,7 @@ class DotNetRecommendationResolver:
         )
 
     async def _text(self, owner, repo, path, ref):
-        return await self._manifest_provider.get(owner, repo, str(path), ref)
+        return await self._manifest_tool.get(owner, repo, str(path), ref)
 
     @staticmethod
     def _parse(text, path):
@@ -106,8 +109,11 @@ class DotNetRecommendationResolver:
             versions[name.casefold()] = value
         return versions
 
-    async def highest_minor_versions(self, owner, repo, project_path, *, ref=None):
+    async def highest_minor_versions(self, owner, repo, project_path, *, ref=None, package_names=None):
         declared = await self._declared_versions(owner, repo, project_path, ref)
+        if package_names is not None:
+            requested = {name.casefold() for name in package_names}
+            declared = {name: version for name, version in declared.items() if name in requested}
         if self._client is not None:
             return await self._recommend(self._client, declared)
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:

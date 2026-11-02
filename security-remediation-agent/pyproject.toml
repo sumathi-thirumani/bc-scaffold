@@ -30,6 +30,7 @@ dependencies = [
   "openai>=1.30.0",
   "tomli>=2.4.1",
   "spdx-tools>=0.8.3",
+  "semantic-version>=2.10.0",
 ]
 
 [project.optional-dependencies]
@@ -83,3 +84,7 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
