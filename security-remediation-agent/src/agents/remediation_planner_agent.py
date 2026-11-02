@@ -156,7 +156,13 @@ class RemediationPlannerAgent:
                     except InvalidVersion:
                         continue
                 ordered = sorted(parsed)
-                target["minimum_fixed_version"] = parsed[ordered[0]] if ordered else ""
+                minimum_versions = {}
+                for entry in entries:
+                    try:
+                        minimum_versions[Version(entry["minimum_fixed_version"])] = entry["minimum_fixed_version"]
+                    except InvalidVersion:
+                        continue
+                target["minimum_fixed_version"] = minimum_versions[max(minimum_versions)] if minimum_versions else ""
                 target["highest_fixed_version"] = parsed[ordered[-1]] if ordered and evidenced else ""
                 try:
                     current_majors = {Version(current).major for current in current_versions}

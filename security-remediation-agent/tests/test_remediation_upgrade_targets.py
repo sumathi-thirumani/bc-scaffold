@@ -24,7 +24,24 @@ def test_planner_consolidates_shared_target_in_bundle():
     packages[1].package_upgrade_recommendations[0].qualifying_upgrade_versions = []
     targets = RemediationPlannerAgent._build_upgrade_targets(packages)
     assert len(targets) == 1
-    assert targets[0]["minimum_fixed_version"] == ""
+    assert targets[0]["minimum_fixed_version"] == "7.2.0"
+
+
+def test_shared_target_uses_maximum_minimum_without_common_candidates():
+    packages = [SecurityPackageTriage(
+        package=child, istransitive=True,
+        vulnerablility_version_range="<2", vulnerablility_fixed_version="2",
+        package_upgrade_recommendations=[PackageUpgradeRecommendation(
+            package="eslint", from_version="7.0.0", qualifying_upgrade_versions=versions,
+        )],
+    ) for child, versions in [("brace-expansion", ["7.9.0", "8.0.0"]),
+                              ("minimatch", ["7.10.0", "9.0.0"])]]
+    targets = RemediationPlannerAgent._build_upgrade_targets(packages)
+    assert len(targets) == 1
+    assert targets[0]["minimum_fixed_version"] == "7.10.0"
+    assert targets[0]["affected_packages"] == ["brace-expansion", "minimatch"]
+    packages.reverse()
+    assert RemediationPlannerAgent._build_upgrade_targets(packages)[0]["minimum_fixed_version"] == "7.10.0"
 
 
 def test_direct_target_keeps_known_fix_without_verification():
