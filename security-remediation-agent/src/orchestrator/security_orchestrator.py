@@ -92,6 +92,9 @@ class SecurityOrchestrator:
         remediation_plan = await self._plan(triage_items, remediation_context, repo, artifacts.ref)
         remediation_plan = await self._review(remediation_plan, repo, artifacts.ref)
         remediation_plan = await self._verify(remediation_plan, repo, artifacts.ref)
+        populate_targets = getattr(self.remediation_planner, "populate_upgrade_targets", None)
+        if callable(populate_targets):
+            populate_targets(remediation_plan)
         await self._report(remediation_plan, repo, artifacts.ref)
         # for bundle in remediation_plan.remediation_plan_bundles:
         #     logger.info("Remediation bundle: %s--%s", bundle.ecosystem, bundle.groupName)

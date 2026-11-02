@@ -1,6 +1,7 @@
 import asyncio
 
 from src.agents.remediation_planner_agent import RemediationPlannerAgent
+from src.models.remediation_plan import RemediationPlan, RemeditionPackageBundle
 from src.models.security_package_triage import PackageUpgradeRecommendation, SecurityPackageTriage
 from src.models.security_remediation_context import SecurityRemediationContext
 
@@ -33,6 +34,23 @@ def test_direct_target_keeps_known_fix_without_verification():
     )
     targets = RemediationPlannerAgent._build_upgrade_targets([package])
     assert targets[0]["minimum_fixed_version"] == "11.0.1"
+
+
+def test_planner_refreshes_targets_after_compatible_version_review():
+    recommendation = PackageUpgradeRecommendation(
+        package="parent", from_version="1.0.0", qualifying_upgrade_versions=["1.1.0", "1.2.0"],
+    )
+    package = SecurityPackageTriage(
+        package="child", vulnerablility_version_range="<2", vulnerablility_fixed_version="2",
+        istransitive=True, package_upgrade_recommendations=[recommendation],
+    )
+    bundle = RemeditionPackageBundle(ecosystem="npm", groupName="default", severity="high", packages=[package])
+    plan = RemediationPlan(remediation_plan_bundles=[bundle])
+    RemediationPlannerAgent.populate_upgrade_targets(plan)
+    assert bundle.upgrade_targets[0]["compatible_version"] == "1.1.0"
+    recommendation.compatible_version = "1.2.0"
+    RemediationPlannerAgent.populate_upgrade_targets(plan)
+    assert bundle.upgrade_targets[0]["compatible_version"] == "1.2.0"
 
 
 def test_transitive_child_fix_is_not_used_for_parent():

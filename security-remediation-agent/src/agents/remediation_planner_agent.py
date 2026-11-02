@@ -91,12 +91,17 @@ class RemediationPlannerAgent:
     ) -> RemediationPlan:
         logger.info("Planning remediation for %d triage items", len(triage_items))
         bundles = await self._build_remediation_package_bundles(triage_items, repo, ref)
-        for bundle in bundles:
-            bundle.upgrade_targets = self._build_upgrade_targets(bundle.packages)
-        return RemediationPlan(
+        remediation_plan = RemediationPlan(
             remediation_plan_bundles=bundles,
             summary=context,
         )
+        self.populate_upgrade_targets(remediation_plan)
+        return remediation_plan
+
+    @classmethod
+    def populate_upgrade_targets(cls, remediation_plan: RemediationPlan) -> None:
+        for bundle in remediation_plan.remediation_plan_bundles:
+            bundle.upgrade_targets = cls._build_upgrade_targets(bundle.packages)
 
     @staticmethod
     def _build_upgrade_targets(packages: list[SecurityPackageTriage]) -> list[dict]:
