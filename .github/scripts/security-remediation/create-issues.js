@@ -249,31 +249,39 @@ function buildIssueGroupSummarySection(ecosystem, plans) {
 
 // ── Acceptance criteria section (checkbox per bundle package) ───────────────
 
-function buildAcceptanceCriteriaSection(plans) {
+function buildAcceptanceCriteriaSection(plans, bundleTargets) {
   const vulnerablePlans = plans.filter(plan => buildAlerts(plan).length > 0);
   let section = `## Acceptance Criteria\n\n`;
+
+  if (Array.isArray(bundleTargets)) {
+    const selectedPackages = new Set(plans.map(plan => plan.package.name.toLowerCase()));
+    const targets = bundleTargets.filter(target => (target.affected_packages || [])
+      .some(name => selectedPackages.has(name.toLowerCase())));
+    for (const target of targets) {
+      const children = (target.affected_packages || []).filter(name => name.toLowerCase() !== target.package.toLowerCase());
+      const scope = children.length ? ` to resolve ${children.map(name => `\`${name}\``).join(', ')}` : '';
+      section += target.minimum_fixed_version
+        ? `- [ ] Upgrade \`${target.package}\` from \`${target.current_version || 'unknown'}\` to \`${target.minimum_fixed_version}\` [compatible: \`${target.compatible_version || 'unknown'}\`, highest fixed: \`${target.highest_fixed_version || 'unknown'}\`]${scope}.\n`
+        : `- [ ] Review and validate an upgrade for \`${target.package}\`${scope}; no common fixed version is established.\n`;
+    }
+    return section + (targets.length ? '\n' : '_No upgrade targets identified in this bundle._\n\n');
+  }
 
   if (vulnerablePlans.length === 0) {
     section += `_No vulnerable packages in this group_\n\n`;
     return section;
   }
 
-  const targets = new Map();
   for (const plan of vulnerablePlans) {
     const recommendations = plan.package.package_upgrade_recommendations || [];
     if (recommendations.length > 0) {
       for (const recommendation of recommendations) {
-        const key = recommendation.package.toLowerCase();
-        if (!targets.has(key)) targets.set(key, { name: recommendation.package, entries: [], children: new Set() });
-        const target = targets.get(key);
-        target.entries.push({
-          ...recommendation,
-          minimum_patched_version: recommendation.minimum_patched_version
-            || (key === plan.package.name.toLowerCase() ? plan.package.minimum_fixed_version : ''),
-          from_version: recommendation.from_version
-            || (key === plan.package.name.toLowerCase() ? plan.package.current_version : ''),
-        });
-        if (key !== plan.package.name.toLowerCase()) target.children.add(plan.package.name);
+        const minimumFixedVersion = recommendation.minimum_patched_version
+          || (recommendation.package === plan.package.name ? plan.package.minimum_fixed_version : '');
+        const scope = recommendation.package === plan.package.name ? '' : ` to resolve \`${plan.package.name}\``;
+        section += minimumFixedVersion
+          ? `- [ ] Upgrade \`${recommendation.package}\` from \`${recommendation.from_version || plan.package.current_version || 'unknown'}\` to \`${minimumFixedVersion}\` [compatible: \`${recommendation.compatible_version || 'unknown'}\`, highest fixed: \`${recommendation.highest_stable_version || 'unknown'}\`]${scope}.\n`
+          : `- [ ] Review and validate an upgrade for \`${recommendation.package}\`${scope} (${recommendation.verification_status || 'requires_validation'}).\n`;
       }
       continue;
     }
@@ -297,27 +305,6 @@ function buildAcceptanceCriteriaSection(plans) {
       ? ` [${versionNoteLabel}: ${minimumVersion}]`
       : '';
     section += `- [ ] Upgrade \`${plan.package.name}\` from \`${currentVersion}\` to \`${remediationVersion}\`${minimumVersionNote}\n`;
-  }
-
-  for (const target of targets.values()) {
-    const entries = target.entries;
-    const scope = target.children.size
-      ? ` to resolve ${[...target.children].map(name => `\`${name}\``).join(', ')}` : '';
-    const currentVersions = [...new Set(entries.map(entry => entry.from_version).filter(Boolean))];
-    let minimum = entries[0].minimum_patched_version;
-    let compatible = entries[0].compatible_version;
-    let highest = entries[0].highest_stable_version;
-    if (entries.length > 1) {
-      const common = (entries[0].qualifying_upgrade_versions || []).filter(version =>
-        entries.every(entry => (entry.qualifying_upgrade_versions || []).includes(version))).sort(compareVersions);
-      minimum = common[0];
-      highest = common.at(-1);
-      compatible = currentVersions.length === 1 ? common.find(version =>
-        version.replace(/^[vV]/, '').split('.')[0] === currentVersions[0].replace(/^[vV]/, '').split('.')[0]) : '';
-    }
-    section += minimum
-      ? `- [ ] Upgrade \`${target.name}\` from \`${currentVersions.join(', ') || 'unknown'}\` to \`${minimum}\` [compatible: \`${compatible || 'unknown'}\`, highest fixed: \`${highest || 'unknown'}\`]${scope}.\n`
-      : `- [ ] Review and validate an upgrade for \`${target.name}\`${scope} (${[...new Set(entries.map(entry => entry.verification_status || 'requires_validation'))].join(', ')}).\n`;
   }
 
   function compareVersions(left, right) {
@@ -541,7 +528,9 @@ function buildIssueBody(ecosystem, upgradeGroup, group, categoryMap, groupPRs) {
   body += `**Workflow Run**: [#${context.runId}](${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId})\n\n`;
   body += repositorySummaryMarkdown(group.plans);
   body += buildIssueGroupSummarySection(ecosystem, group.plans);
-  body += buildAcceptanceCriteriaSection(group.plans);
+  const sourceBundle = (remediationPlan.remediation_plan_bundles || []).find(bundle =>
+    bundle.ecosystem === ecosystem && bundle.groupName === upgradeGroup);
+  body += buildAcceptanceCriteriaSection(group.plans, sourceBundle?.upgrade_targets);
 
   const groupPlansSet = new Set(group.plans);
   body += buildRemediationPRsSection(ecosystem, categoryMap, groupPlansSet, groupPRs);

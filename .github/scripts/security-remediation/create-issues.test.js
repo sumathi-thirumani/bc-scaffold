@@ -25,8 +25,23 @@ test('current triage output produces verified parent criteria, unresolved tracki
         package_upgrade_recommendations: [{ package: 'candidate', from_version: '1.0.0',
           minimum_patched_version: '1.1.0', compatible_version: '1.2.0', highest_stable_version: '2.0.0',
           verification_status: 'requires_validation' }] },
+      { package: 'fast-uri', vulnerabilities: [{ severity: 'high', cvss: 0 }],
+        package_upgrade_recommendations: [{ package: 'orval', minimum_patched_version: '99.0.0' }] },
+      { package: 'undici', vulnerabilities: [{ severity: 'high', cvss: 0 }],
+        package_upgrade_recommendations: [{ package: 'orval', minimum_patched_version: '100.0.0' }] },
     ] }],
   };
+  remediationPlan.remediation_plan_bundles[0].upgrade_targets = [
+    { package: 'parent', current_version: '1.0.0', minimum_fixed_version: '1.1.0',
+      compatible_version: '1.5.0', highest_fixed_version: '3.0.0', affected_packages: ['child'] },
+    { package: 'minimatch', current_version: '3.0.4', minimum_fixed_version: '3.1.2', affected_packages: ['minimatch'] },
+    { package: 'candidate', current_version: '1.0.0', minimum_fixed_version: '1.1.0',
+      compatible_version: '1.2.0', highest_fixed_version: '2.0.0', affected_packages: ['candidate'] },
+    { package: 'unverified', affected_packages: ['unverified'] },
+    { package: 'unresolved', affected_packages: ['unresolved'] },
+    { package: 'orval', current_version: '7.0.0', minimum_fixed_version: '7.2.0',
+      compatible_version: '7.2.0', highest_fixed_version: '8.0.0', affected_packages: ['fast-uri', 'undici'] },
+  ];
   const raw = prepareOutput(remediationPlan);
   const created = [];
   let output;
@@ -54,9 +69,12 @@ test('current triage output produces verified parent criteria, unresolved tracki
   assert.match(body, /Upgrade `candidate` from `1\.0\.0` to `1\.1\.0` \[compatible: `1\.2\.0`, highest fixed: `2\.0\.0`\]/);
   assert.doesNotMatch(body, /Investigate remediation for `minimatch`/);
   assert.match(body, /Review and validate an upgrade for `unverified`/);
-  assert.match(body, /Investigate remediation for `unresolved`/);
+  assert.match(body, /Review and validate an upgrade for `unresolved`/);
+  assert.equal((body.match(/- \[ \] Upgrade `orval`/g) || []).length, 1);
+  assert.match(body, /Upgrade `orval` from `7\.0\.0` to `7\.2\.0` \[compatible: `7\.2\.0`, highest fixed: `8\.0\.0`\] to resolve `fast-uri`, `undici`/);
+  assert.doesNotMatch(body, /to `99\.0\.0`|to `100\.0\.0`/);
   assert.doesNotMatch(body, /9\.0\.0|Stub branch creation failed|Upgrade `child`/);
-  assert.match(body, /\| 0 \| 4 \| 1 \| 0 \|/);
+  assert.match(body, /\| 0 \| 6 \| 1 \| 0 \|/);
   assert.match(body, /\| High \| Transitive \|/);
   assert.equal(output.stats.total_reviewed_prs, 5);
   assert.equal(output.stats.total_vulnerabilities, 3);
