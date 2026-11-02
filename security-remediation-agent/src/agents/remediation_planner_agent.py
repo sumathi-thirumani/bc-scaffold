@@ -90,7 +90,74 @@ class RemediationPlannerAgent:
         repo: dict | None = None, ref: str | None = None,
     ) -> RemediationPlan:
         logger.info("Planning remediation for %d triage items", len(triage_items))
+        bundles = await self._build_remediation_package_bundles(triage_items, repo, ref)
+        for bundle in bundles:
+            bundle.upgrade_targets = self._build_upgrade_targets(bundle.packages)
         return RemediationPlan(
-            remediation_plan_bundles=await self._build_remediation_package_bundles(triage_items, repo, ref),
+            remediation_plan_bundles=bundles,
             summary=context,
         )
+
+    @staticmethod
+    def _build_upgrade_targets(packages: list[SecurityPackageTriage]) -> list[dict]:
+        grouped = {}
+        for package in packages:
+            entries = [
+                {"package": recommendation.package, "current_version": recommendation.from_version,
+                 "minimum_fixed_version": recommendation.minimum_patched_version,
+                 "compatible_version": recommendation.compatible_version,
+                 "highest_fixed_version": recommendation.highest_stable_version,
+                 "qualifying_versions": recommendation.qualifying_upgrade_versions}
+                for recommendation in package.package_upgrade_recommendations
+            ]
+            if not entries and not package.istransitive:
+                entries = [{"package": package.package, "current_version": package.current_version,
+                            "minimum_fixed_version": package.vulnerablility_fixed_version,
+                            "compatible_version": "", "highest_fixed_version": "",
+                            "qualifying_versions": None}]
+            if not entries:
+                entries = [
+                    {"package": parent.package, "current_version": parent.version,
+                     "minimum_fixed_version": "", "compatible_version": "",
+                     "highest_fixed_version": "", "qualifying_versions": []}
+                    for occurrence in package.transitive_dependency_occurrences
+                    for parent in occurrence.introducers
+                ]
+            for entry in entries:
+                group = grouped.setdefault(entry["package"].casefold(), {"entries": [], "affected_packages": set()})
+                if entry not in group["entries"]:
+                    group["entries"].append(entry)
+                group["affected_packages"].add(package.package)
+
+        targets = []
+        for group in grouped.values():
+            entries = group["entries"]
+            target = {key: value for key, value in entries[0].items() if key != "qualifying_versions"}
+            target["affected_packages"] = sorted(group["affected_packages"])
+            current_versions = sorted({entry["current_version"] for entry in entries if entry["current_version"]})
+            target["current_version"] = ", ".join(current_versions)
+            if len(entries) > 1:
+                evidenced = [set(entry["qualifying_versions"]) for entry in entries
+                             if entry["qualifying_versions"] is not None]
+                common = set.intersection(*evidenced) if evidenced else {
+                    entry["minimum_fixed_version"] for entry in entries if entry["minimum_fixed_version"]}
+                parsed = {}
+                for candidate in common:
+                    try:
+                        version = Version(candidate)
+                        if all(entry["minimum_fixed_version"] and version >= Version(entry["minimum_fixed_version"])
+                               for entry in entries):
+                            parsed[version] = candidate
+                    except InvalidVersion:
+                        continue
+                ordered = sorted(parsed)
+                target["minimum_fixed_version"] = parsed[ordered[0]] if ordered else ""
+                target["highest_fixed_version"] = parsed[ordered[-1]] if ordered and evidenced else ""
+                try:
+                    current_majors = {Version(current).major for current in current_versions}
+                except InvalidVersion:
+                    current_majors = set()
+                target["compatible_version"] = next(
+                    (parsed[version] for version in ordered if evidenced and current_majors == {version.major}), "")
+            targets.append(target)
+        return targets

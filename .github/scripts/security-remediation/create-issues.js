@@ -258,17 +258,27 @@ function buildAcceptanceCriteriaSection(plans) {
     return section;
   }
 
+  const targets = new Map();
   for (const plan of vulnerablePlans) {
     const recommendations = plan.package.package_upgrade_recommendations || [];
     if (recommendations.length > 0) {
       for (const recommendation of recommendations) {
-        const verified = recommendation.verification_status === 'resolution_verified'
-          && recommendation.verified_version;
-        const scope = recommendation.package === plan.package.name ? '' : ` to resolve \`${plan.package.name}\``;
-        section += verified
-          ? `- [ ] Upgrade \`${recommendation.package}\` from \`${recommendation.from_version || 'unknown'}\` to \`${recommendation.verified_version}\`${scope} and run the project tests.\n`
-          : `- [ ] Review and validate an upgrade for \`${recommendation.package}\`${scope} (${recommendation.verification_status || 'requires_validation'}).\n`;
+        const key = recommendation.package.toLowerCase();
+        if (!targets.has(key)) targets.set(key, { name: recommendation.package, entries: [], children: new Set() });
+        const target = targets.get(key);
+        target.entries.push({
+          ...recommendation,
+          minimum_patched_version: recommendation.minimum_patched_version
+            || (key === plan.package.name.toLowerCase() ? plan.package.minimum_fixed_version : ''),
+          from_version: recommendation.from_version
+            || (key === plan.package.name.toLowerCase() ? plan.package.current_version : ''),
+        });
+        if (key !== plan.package.name.toLowerCase()) target.children.add(plan.package.name);
       }
+      continue;
+    }
+    if (plan.package.minimum_fixed_version) {
+      section += `- [ ] Upgrade \`${plan.package.name}\` from \`${plan.package.current_version || 'unknown'}\` to \`${plan.package.minimum_fixed_version}\` [compatible: \`unknown\`, highest fixed: \`unknown\`].\n`;
       continue;
     }
     if (plan.fix.fix_class === 'NO_FIX_AVAILABLE') {
@@ -287,6 +297,27 @@ function buildAcceptanceCriteriaSection(plans) {
       ? ` [${versionNoteLabel}: ${minimumVersion}]`
       : '';
     section += `- [ ] Upgrade \`${plan.package.name}\` from \`${currentVersion}\` to \`${remediationVersion}\`${minimumVersionNote}\n`;
+  }
+
+  for (const target of targets.values()) {
+    const entries = target.entries;
+    const scope = target.children.size
+      ? ` to resolve ${[...target.children].map(name => `\`${name}\``).join(', ')}` : '';
+    const currentVersions = [...new Set(entries.map(entry => entry.from_version).filter(Boolean))];
+    let minimum = entries[0].minimum_patched_version;
+    let compatible = entries[0].compatible_version;
+    let highest = entries[0].highest_stable_version;
+    if (entries.length > 1) {
+      const common = (entries[0].qualifying_upgrade_versions || []).filter(version =>
+        entries.every(entry => (entry.qualifying_upgrade_versions || []).includes(version))).sort(compareVersions);
+      minimum = common[0];
+      highest = common.at(-1);
+      compatible = currentVersions.length === 1 ? common.find(version =>
+        version.replace(/^[vV]/, '').split('.')[0] === currentVersions[0].replace(/^[vV]/, '').split('.')[0]) : '';
+    }
+    section += minimum
+      ? `- [ ] Upgrade \`${target.name}\` from \`${currentVersions.join(', ') || 'unknown'}\` to \`${minimum}\` [compatible: \`${compatible || 'unknown'}\`, highest fixed: \`${highest || 'unknown'}\`]${scope}.\n`
+      : `- [ ] Review and validate an upgrade for \`${target.name}\`${scope} (${[...new Set(entries.map(entry => entry.verification_status || 'requires_validation'))].join(', ')}).\n`;
   }
 
   function compareVersions(left, right) {

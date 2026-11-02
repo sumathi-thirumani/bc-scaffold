@@ -104,7 +104,7 @@ function prepareOutput(raw, severities = 'critical,high,medium,low') {
         : '';
       const markdown = `### ${name} (${ecosystem})\n\n` +
         `- [ ] **AC:** Upgrade \`${name}\` from \`${pkg.current_version || 'unknown'}\` to \`${target || 'no known fix'}\`${minimumVersionNote} ` +
-        `(${relationship}, ${isbreakable ? 'breaking' : 'non-breaking'}). Resolve ${advisories.join(', ') || 'the reported vulnerabilities'} and run the project tests.\n`;
+        `(${relationship}, ${isbreakable ? 'breaking' : 'non-breaking'}). Resolve ${advisories.join(', ') || 'the reported vulnerabilities'}.\n`;
       const plan = {
         plan_id: `${raw.plan_id || 'plan'}-${bundleIndex}-${packageIndex}`,
         package: {
@@ -114,6 +114,7 @@ function prepareOutput(raw, severities = 'critical,high,medium,low') {
           current_version: pkg.current_version,
           current_version_range: pkg.current_version || 'unknown',
           minimum_upgradable_version: minimumVersion,
+          minimum_fixed_version: pkg.vulnerablility_fixed_version || minimumVersion,
           vulnerabilities,
           pull_requests: pkg.remediation_prs || [],
           dependency_occurrences: dependencyOccurrences,

@@ -13,11 +13,18 @@ test('current triage output produces verified parent criteria, unresolved tracki
       { package: 'child', istransitive: true,
         vulnerabilities: [{ package: 'child', severity: 'high', cvss: 0, ghsa_id: 'GHSA-child' }],
         package_upgrade_recommendations: [{ package: 'parent', from_version: '1.0.0',
+          minimum_patched_version: '1.1.0', compatible_version: '1.5.0', highest_stable_version: '3.0.0',
           verified_version: '2.0.0', verification_status: 'resolution_verified' }] },
       { package: 'unverified', vulnerabilities: [{ severity: 'moderate', cvss: 0 }],
         package_upgrade_recommendations: [{ package: 'unverified', highest_stable_version: '9.0.0',
           verification_status: 'requires_validation' }] },
       { package: 'unresolved', vulnerabilities: [{ severity: 'high', cvss: 0 }] },
+      { package: 'minimatch', current_version: '3.0.4', vulnerablility_fixed_version: '3.1.2',
+        vulnerabilities: [{ severity: 'high', cvss: 0 }] },
+      { package: 'candidate', current_version: '1.0.0', vulnerabilities: [{ severity: 'high', cvss: 0 }],
+        package_upgrade_recommendations: [{ package: 'candidate', from_version: '1.0.0',
+          minimum_patched_version: '1.1.0', compatible_version: '1.2.0', highest_stable_version: '2.0.0',
+          verification_status: 'requires_validation' }] },
     ] }],
   };
   const raw = prepareOutput(remediationPlan);
@@ -41,11 +48,15 @@ test('current triage output produces verified parent criteria, unresolved tracki
   );
   assert.equal(created.length, 1);
   const body = created[0].body;
-  assert.match(body, /Upgrade `parent` from `1\.0\.0` to `2\.0\.0` to resolve `child`/);
+  assert.doesNotMatch(body, /and run the project tests/);
+  assert.match(body, /Upgrade `parent` from `1\.0\.0` to `1\.1\.0` \[compatible: `1\.5\.0`, highest fixed: `3\.0\.0`\] to resolve `child`/);
+  assert.match(body, /Upgrade `minimatch` from `3\.0\.4` to `3\.1\.2` \[compatible: `unknown`, highest fixed: `unknown`\]/);
+  assert.match(body, /Upgrade `candidate` from `1\.0\.0` to `1\.1\.0` \[compatible: `1\.2\.0`, highest fixed: `2\.0\.0`\]/);
+  assert.doesNotMatch(body, /Investigate remediation for `minimatch`/);
   assert.match(body, /Review and validate an upgrade for `unverified`/);
   assert.match(body, /Investigate remediation for `unresolved`/);
   assert.doesNotMatch(body, /9\.0\.0|Stub branch creation failed|Upgrade `child`/);
-  assert.match(body, /\| 0 \| 2 \| 1 \| 0 \|/);
+  assert.match(body, /\| 0 \| 4 \| 1 \| 0 \|/);
   assert.match(body, /\| High \| Transitive \|/);
   assert.equal(output.stats.total_reviewed_prs, 5);
   assert.equal(output.stats.total_vulnerabilities, 3);
