@@ -2,6 +2,31 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { prepareOutput } = require('./prepare-workflow-output');
 
+test('adapts triage packages and only uses verified recommendations as upgrade targets', () => {
+  const raw = { remediation_plan_bundles: [{ ecosystem: 'npm', groupName: 'current',
+    action_type: 'Need manual/agent review', packages: [
+      { package: 'child', istransitive: true, manifest_path: 'web/package-lock.json',
+        vulnerabilities: [{ severity: 'high', ghsa_id: 'GHSA-child' }],
+        transitive_dependency_occurrences: [{ package: 'child', introducers: [{ package: 'parent' }] }],
+        package_upgrade_recommendations: [{ package: 'parent', verified_version: '2.0.0',
+          verification_status: 'resolution_verified' }] },
+      { package: 'direct', current_version: '1.0.0', severity: 'high',
+        package_upgrade_recommendations: [{ package: 'direct', minimum_patched_version: '1.1.0',
+          verified_version: '1.2.0', verification_status: 'resolution_verified' }] },
+      { package: 'unverified', severity: 'high', vulnerablility_fixed_version: '2.0.0',
+        package_upgrade_recommendations: [{ package: 'unverified', highest_stable_version: '3.0.0',
+          verified_version: '3.0.0', verification_status: 'requires_validation' }] },
+    ] }] };
+  const plans = prepareOutput(raw).groups.high.plans;
+  assert.deepEqual(plans.map(plan => plan.package.name), ['child', 'direct', 'unverified']);
+  assert.equal(plans[0].package.relationship, 'transitive');
+  assert.equal(plans[0].package.dependency_occurrences.length, 1);
+  assert.equal(plans[0].package.package_upgrade_recommendations[0].package, 'parent');
+  assert.equal(plans[0].package.manifest_path, 'web/package-lock.json');
+  assert.deepEqual(plans.map(plan => plan.fix.upgrade_version), ['', '1.2.0', '']);
+  assert.ok(plans.every(plan => plan.action.action_type === 'open_issue'));
+});
+
 test('normalizes moderate and medium in filters, alerts, and issue severity', () => {
   const raw = { plan_id: 'alias', remediation_plan_bundles: [
     { groupName: 'group-a', ecosystem: 'npm', packages: [

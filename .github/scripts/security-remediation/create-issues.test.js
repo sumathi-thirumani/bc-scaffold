@@ -5,6 +5,52 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, 'create-issues.js'), 'utf8');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
+test('current triage output produces verified parent criteria, unresolved tracking, and flat totals', async () => {
+  const { prepareOutput } = require('./prepare-workflow-output');
+  const remediationPlan = {
+    summary: { total_vulnerabilities: 3, total_reviewed_prs: 5 },
+    remediation_plan_bundles: [{ ecosystem: 'npm', groupName: 'current', packages: [
+      { package: 'child', istransitive: true,
+        vulnerabilities: [{ package: 'child', severity: 'high', cvss: 0, ghsa_id: 'GHSA-child' }],
+        package_upgrade_recommendations: [{ package: 'parent', from_version: '1.0.0',
+          verified_version: '2.0.0', verification_status: 'resolution_verified' }] },
+      { package: 'unverified', vulnerabilities: [{ severity: 'moderate', cvss: 0 }],
+        package_upgrade_recommendations: [{ package: 'unverified', highest_stable_version: '9.0.0',
+          verification_status: 'requires_validation' }] },
+      { package: 'unresolved', vulnerabilities: [{ severity: 'high', cvss: 0 }] },
+    ] }],
+  };
+  const raw = prepareOutput(remediationPlan);
+  const created = [];
+  let output;
+  const github = { rest: {
+    search: { issuesAndPullRequests: async () => ({ data: { items: [] } }) },
+    issues: {
+      getLabel: async () => ({}),
+      create: async args => { created.push(args); return { data: { number: 1, html_url: 'https://example.test/issue' } }; },
+    },
+  } };
+  const fakeFs = {
+    readFileSync: file => JSON.stringify(file === 'orchestrator-output.json' ? remediationPlan : raw),
+    writeFileSync: (file, data) => { output = JSON.parse(data); },
+  };
+  await new AsyncFunction('github', 'context', 'core', 'require', 'process', 'console', source)(
+    github, { repo: { owner: 'owner', repo: 'repo' }, serverUrl: 'https://github.com', runId: 1 },
+    { info() {}, warning(message) { throw new Error(message); } },
+    name => { assert.equal(name, 'fs'); return fakeFs; }, { env: { BASE_BRANCH: 'main' } }, console,
+  );
+  assert.equal(created.length, 1);
+  const body = created[0].body;
+  assert.match(body, /Upgrade `parent` from `1\.0\.0` to `2\.0\.0` to resolve `child`/);
+  assert.match(body, /Review and validate an upgrade for `unverified`/);
+  assert.match(body, /Investigate remediation for `unresolved`/);
+  assert.doesNotMatch(body, /9\.0\.0|Stub branch creation failed|Upgrade `child`/);
+  assert.match(body, /\| 0 \| 2 \| 1 \| 0 \|/);
+  assert.match(body, /\| High \| Transitive \|/);
+  assert.equal(output.stats.total_reviewed_prs, 5);
+  assert.equal(output.stats.total_vulnerabilities, 3);
+});
+
 test('tracking issues group by ecosystem and major package or minor-patch, across severities', async () => {
   const plan = (name, ecosystem, major = false) => ({
     package: { name, ecosystem, effective_severity: 'medium', unique_ghsas: [], current_version_range: '1.0.0' },

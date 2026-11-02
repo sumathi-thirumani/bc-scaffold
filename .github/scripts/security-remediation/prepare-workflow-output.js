@@ -43,6 +43,23 @@ function compareVersions(left, right) {
   return 0;
 }
 
+function adaptTriagePackage(pkg) {
+  if (!pkg.package) return pkg;
+  const recommendations = pkg.package_upgrade_recommendations || [];
+  const ownRecommendation = recommendations.find(recommendation =>
+    recommendation.package.toLowerCase() === pkg.package.toLowerCase()
+    && recommendation.verification_status === 'resolution_verified'
+    && recommendation.verified_version);
+  return {
+    ...pkg,
+    remediation_package: pkg.package,
+    remediation_version: ownRecommendation?.verified_version || '',
+    minimum_upgradable_version: ownRecommendation?.minimum_patched_version || '',
+    remediation_prs: pkg.pull_request_metadata || [],
+    packages: [{ ...pkg, name: pkg.package, relationship: pkg.istransitive ? 'transitive' : 'direct' }],
+  };
+}
+
 function prepareOutput(raw, severities = 'critical,high,medium,low') {
   if (!raw || !Array.isArray(raw.remediation_plan_bundles)) {
     throw new Error('Expected orchestrator RemediationPlan.remediation_plan_bundles array');
@@ -54,10 +71,11 @@ function prepareOutput(raw, severities = 'critical,high,medium,low') {
   const groups = {};
   for (const [bundleIndex, bundle] of raw.remediation_plan_bundles.entries()) {
     const bundleEcosystem = bundle.ecosystem || 'unknown';
-    for (const [packageIndex, pkg] of (bundle.packages || []).entries()) {
+    for (const [packageIndex, sourcePackage] of (bundle.packages || []).entries()) {
+      const pkg = adaptTriagePackage(sourcePackage);
       const vulnerabilities = (pkg.packages || []).flatMap(p => p.vulnerabilities || []);
       const severity = SEVERITIES.find(s => vulnerabilities.some(v => normalizeSeverity(v.severity) === s))
-        || normalizeSeverity(bundle.severity) || 'unknown';
+        || normalizeSeverity(pkg.severity) || normalizeSeverity(bundle.severity) || 'unknown';
       if (!selected.has(severity)) continue;
       const name = pkg.remediation_package;
       const ecosystem = pkg.ecosystem || bundleEcosystem;
@@ -75,7 +93,7 @@ function prepareOutput(raw, severities = 'critical,high,medium,low') {
       // Only reuse a PR whose package and target match the planned upgrade.
       const pr = target && (pkg.remediation_prs || []).find(p => p.pr_number &&
         (p.version_bumps || []).some(b => b.package.toLowerCase() === name.toLowerCase() && b.to_version === target));
-      const action = bundle.action_type || (target
+      const action = (sourcePackage.package ? 'open_issue' : bundle.action_type) || (target
         ? (pr ? (isbreakable ? 'standalone_pr' : 'rollup_pr') : 'placeholder_pr')
         : 'open_issue');
       const actionType = ['rollup_pr', 'standalone_pr'].includes(action) && !pr ? 'placeholder_pr' : action;
@@ -99,6 +117,8 @@ function prepareOutput(raw, severities = 'critical,high,medium,low') {
           vulnerabilities,
           pull_requests: pkg.remediation_prs || [],
           dependency_occurrences: dependencyOccurrences,
+          package_upgrade_recommendations: pkg.package_upgrade_recommendations || [],
+          manifest_path: pkg.manifest_path || null,
           effective_severity: severity,
           unique_ghsas: advisories,
           isbreakable,

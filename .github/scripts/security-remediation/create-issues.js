@@ -13,7 +13,7 @@ const raw = JSON.parse(fs.readFileSync('workflow-plans.json', 'utf8'));
 const output = raw.groups || raw;
 const remediationPlan = JSON.parse(fs.readFileSync('orchestrator-output.json', 'utf8'));
 const summary = remediationPlan.summary || {};
-const summaryContext = summary.context || {};
+const summaryContext = summary.context || summary;
 const BASE_BRANCH = process.env.BASE_BRANCH;
 const GITHUB_BODY_MAX = 65536;
 
@@ -144,6 +144,10 @@ const SEVERITY_BUCKETS = ['Critical', 'High', 'Medium', 'Low'];
 // Same CVSS thresholds used by severityLabel(), applied per-alert so counts
 // bucket consistently with the per-package Severity column below.
 function severityBucketOf(alert) {
+  const severity = (alert.severity || '').toLowerCase();
+  const normalized = severity === 'moderate' ? 'medium' : severity;
+  const bucket = SEVERITY_BUCKETS.find(value => value.toLowerCase() === normalized);
+  if (bucket) return bucket;
   const cvss = alert.cvss;
   if (cvss == null) return null;
   return cvss >= 9 ? 'Critical' : cvss >= 7 ? 'High' : cvss >= 4 ? 'Medium' : 'Low';
@@ -171,6 +175,8 @@ function repositorySummaryMarkdown(plans) {
 // ── Issue group summary section (per-package overview table) ───────────────
 
 function severityLabel(alerts) {
+  const severity = SEVERITY_BUCKETS.find(bucket => alerts.some(alert => severityBucketOf(alert) === bucket));
+  if (alerts.some(alert => alert.severity) && severity) return severity;
   const cvssValues = alerts.map(a => a.cvss).filter(v => v != null);
   if (cvssValues.length === 0) return '—';
   const maxCvss = Math.max(...cvssValues);
@@ -253,6 +259,22 @@ function buildAcceptanceCriteriaSection(plans) {
   }
 
   for (const plan of vulnerablePlans) {
+    const recommendations = plan.package.package_upgrade_recommendations || [];
+    if (recommendations.length > 0) {
+      for (const recommendation of recommendations) {
+        const verified = recommendation.verification_status === 'resolution_verified'
+          && recommendation.verified_version;
+        const scope = recommendation.package === plan.package.name ? '' : ` to resolve \`${plan.package.name}\``;
+        section += verified
+          ? `- [ ] Upgrade \`${recommendation.package}\` from \`${recommendation.from_version || 'unknown'}\` to \`${recommendation.verified_version}\`${scope} and run the project tests.\n`
+          : `- [ ] Review and validate an upgrade for \`${recommendation.package}\`${scope} (${recommendation.verification_status || 'requires_validation'}).\n`;
+      }
+      continue;
+    }
+    if (plan.fix.fix_class === 'NO_FIX_AVAILABLE') {
+      section += `- [ ] Investigate remediation for \`${plan.package.name}\`; no verified upgrade is available.\n`;
+      continue;
+    }
     const currentVersion = plan.package.current_version || 'unknown';
     const remediationVersion = plan.fix.upgrade_version || '—';
     const minimumVersion = plan.package.minimum_upgradable_version;
@@ -289,7 +311,8 @@ function buildAcceptanceCriteriaSection(plans) {
 
 function remediationStatusFor(act, cPlans, categoryPRs) {
   if (act === 'open-issue') {
-    return { link: '—', status: 'No fix available - issue tracking only' };
+    return { link: (categoryPRs || []).map(pr => `[#${pr.number}](${pr.url})`).join(', ') || '—',
+      status: 'Manual/agent review - issue tracking only' };
   }
   if (act === 'placeholder') {
     if (categoryPRs && categoryPRs.length > 0) {
@@ -349,7 +372,7 @@ function buildReconciliationNotesSection(ecosystem) {
 // ── Per-package detail sections ──────────────────────────────────────────────
 
 function planStatus(plan) {
-  if (plan.action.action_type === 'open_issue') return 'No fix available - tracking issue opened';
+  if (plan.action.action_type === 'open_issue') return 'Manual/agent review - tracking issue opened';
   if (plan.action.action_type === 'placeholder_pr') return 'Placeholder - awaiting agent/manual fix';
   return plan.action.pr_number ? 'Remediation PR matched' : 'Awaiting remediation PR';
 }
