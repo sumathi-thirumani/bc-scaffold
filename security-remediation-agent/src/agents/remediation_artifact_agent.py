@@ -98,7 +98,7 @@ class RemediationArtifactAgent:
                 if not datasource or not path:
                     continue
                 for recommendation in triage.package_upgrade_recommendations:
-                    version = recommendation.verified_version
+                    version = triage.verified_version(recommendation.package)
                     if not version:
                         continue
                     try:

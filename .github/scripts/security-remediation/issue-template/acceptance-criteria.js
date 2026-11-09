@@ -25,7 +25,7 @@ function planCriteria(vulnerablePlans) {
         const minimumFixedVersion = recommendation.minimum_patched_version
           || (recommendation.package === plan.package.name ? plan.package.minimum_fixed_version : '');
         if (!minimumFixedVersion) continue;
-        section += `- [ ] Upgrade \`${recommendation.package}\` from \`${recommendation.from_version || plan.package.current_version || 'unknown'}\` to \`${minimumFixedVersion}\` [compatible: \`${recommendation.compatible_version || 'unknown'}\`, highest fixed: \`${recommendation.highest_stable_version || 'unknown'}\`].\n`;
+        section += `- [ ] Upgrade \`${recommendation.package}\` from \`${recommendation.from_version || plan.package.current_version || 'unknown'}\` to \`${minimumFixedVersion}\` [compatible: \`${(plan.package.compatible_versions || {})[recommendation.package] || 'unknown'}\`, highest fixed: \`${recommendation.highest_stable_version || 'unknown'}\`].\n`;
       }
       continue;
     }

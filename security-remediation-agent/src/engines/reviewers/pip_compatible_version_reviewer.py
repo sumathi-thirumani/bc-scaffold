@@ -242,13 +242,13 @@ class PythonCompatibleVersionReviewer:
                     for name, version in sorted(candidates.items()):
                         if name not in names:
                             add_update_triage(plan, lambda t: t is first, name, "", version)
-                for package, triage in entries:
-                    name = canonicalize_name(package.package)
+                for recommendation, triage in entries:
+                    name = canonicalize_name(recommendation.package)
                     candidate = candidates.get(name)
                     if not candidate:
                         continue
-                    package.compatible_version = candidate
-                    package.compatible_review_status = "upgrade_found"
+                    triage.compatible_versions[recommendation.package] = candidate
+                    recommendation.compatible_review_status = "upgrade_found"
                 tool_name = "poetry up" if is_poetry else ("uv-upsync" if is_uv else "pcu")
                 notes.append(f"{path}: {len(candidates)} {tool_name} same-major candidate(s); "
                              "not security-verified or install-tested")

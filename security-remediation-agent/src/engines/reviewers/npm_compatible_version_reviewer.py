@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from ...models.remediation_plan import RemediationPlan
-from ...models.security_package_triage import PackageUpgradeRecommendation
+from ...models.security_package_triage import PackageUpgradeRecommendation, SecurityPackageTriage
 from ...tools.ecosystem_manifest_tool import ManifestTool
 from ...utils.subprocess_env import minimal_subprocess_env
 from .update_triage import add_update_triage
@@ -73,7 +73,8 @@ class NpmCompatibleVersionReviewer:
             raise ValueError("Repository owner and name are required for npm review")
         reconciliation_notes: list[str] = []
         for manifest_path in sorted(npm_manifest_paths):
-            recommendations = self._recommendations_for(remediation_plan, manifest_path)
+            entries = self._recommendations_for(remediation_plan, manifest_path)
+            recommendations = [recommendation for _, recommendation in entries]
             if not recommendations:
                 continue
             try:
@@ -114,7 +115,7 @@ class NpmCompatibleVersionReviewer:
             )
             if result.returncode == 0:
                 self._populate_compatible_versions(
-                    recommendations,
+                    entries,
                     ncu_result.upgrades,
                     ncu_result.declared_versions,
                 )
@@ -212,9 +213,9 @@ class NpmCompatibleVersionReviewer:
     @staticmethod
     def _recommendations_for(
         remediation_plan: RemediationPlan, manifest_path: str
-    ) -> list[PackageUpgradeRecommendation]:
+    ) -> list[tuple[SecurityPackageTriage, PackageUpgradeRecommendation]]:
         return [
-            recommendation
+            (triage, recommendation)
             for bundle in remediation_plan.remediation_plan_bundles
             for triage in bundle.packages
             if triage.ecosystem.lower() in NPM_ECOSYSTEMS and triage.manifest_path
@@ -257,11 +258,11 @@ class NpmCompatibleVersionReviewer:
 
     @staticmethod
     def _populate_compatible_versions(
-        recommendations: list[PackageUpgradeRecommendation],
+        entries: list[tuple[SecurityPackageTriage, PackageUpgradeRecommendation]],
         upgrades: dict[str, str],
         declared_versions: dict[str, str],
     ) -> None:
-        for recommendation in recommendations:
+        for triage, recommendation in entries:
             name = recommendation.package.casefold()
             if name in NCU_REJECTED_PACKAGES:
                 recommendation.compatible_review_status = EXCLUDED
@@ -279,5 +280,5 @@ class NpmCompatibleVersionReviewer:
                     )
                     recommendation.compatible_review_status = REVIEW_FAILED
                 else:
-                    recommendation.compatible_version = version
+                    triage.compatible_versions[recommendation.package] = version
                     recommendation.compatible_review_status = UPGRADE_FOUND

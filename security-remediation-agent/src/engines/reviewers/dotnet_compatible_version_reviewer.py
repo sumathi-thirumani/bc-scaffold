@@ -100,5 +100,5 @@ class DotNetCompatibleVersionReviewer:
                 for recommendation in triage.package_upgrade_recommendations:
                     candidate = recommendations.get(f"{recommendation.package.casefold()}:candidate")
                     if candidate:
-                        recommendation.compatible_version = candidate
+                        triage.compatible_versions[recommendation.package] = candidate
                         recommendation.compatible_review_status = "upgrade_found"

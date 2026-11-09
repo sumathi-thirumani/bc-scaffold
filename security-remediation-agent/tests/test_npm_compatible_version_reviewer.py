@@ -17,6 +17,7 @@ def _plan(*names):
     triage = SimpleNamespace(
         ecosystem="npm",
         manifest_path="web/package.json",
+        compatible_versions={},
         package_upgrade_recommendations=recommendations,
     )
     bundle = SimpleNamespace(groupName="g", packages=[triage])
@@ -52,10 +53,11 @@ async def test_statuses_are_reported_per_package(monkeypatch):
 
     await _review(monkeypatch, _reviewer(), plan, outcome)
 
-    assert (found.compatible_review_status, found.compatible_version) == ("upgrade_found", "2.1.0")
+    triage = plan.remediation_plan_bundles[0].packages[0]
+    assert (found.compatible_review_status, triage.compatible_versions["a"]) == ("upgrade_found", "2.1.0")
     assert unchanged.compatible_review_status == "no_upgrade"
     assert rejected.compatible_review_status == "no_upgrade"
-    assert rejected.compatible_version == ""
+    assert "bootstrap" not in triage.compatible_versions
     assert undeclared.compatible_review_status == "not_declared"
 
 

@@ -49,7 +49,7 @@ async def test_resolved_parent_records_version_and_derives_compatible_version():
         _triage(), "App.Lib", "1.0.0", _Resolver(resolution), introducer=introducer,
     )
 
-    assert recommendation.compatible_version == "1.2.0"
+    assert recommendation.default_compatible_version == "1.2.0"
     assert recommendation.requires_verification
     assert introducer.recommendation_action == "upgrade_parent"
     assert introducer.recommended_version == "1.2.0"

@@ -120,8 +120,8 @@ class SecurityOrchestrator:
                         logger.info(
                             "Additional update %s: current=%s, compatible=%s, verified=%s",
                             recommendation.package, recommendation.from_version,
-                            recommendation.compatible_version or "unavailable",
-                            recommendation.verified_version or "unverified",
+                            package.compatible_version(recommendation.package) or "unavailable",
+                            package.verified_version(recommendation.package) or "unverified",
                         )
                     continue
                 logger.info(
@@ -144,7 +144,8 @@ class SecurityOrchestrator:
                             "verification notes=%s",
                             recommendation.package, recommendation.from_version,
                             recommendation.minimum_patched_version, recommendation.highest_stable_version,
-                            recommendation.compatible_version, recommendation.verified_version,
+                            package.compatible_version(recommendation.package),
+                            package.verified_version(recommendation.package),
                             "; ".join(
                                 f"{candidate.version} {candidate.verification_status}: {candidate.verification_message}"
                                 for candidate in recommendation.qualifying_upgrade_versions

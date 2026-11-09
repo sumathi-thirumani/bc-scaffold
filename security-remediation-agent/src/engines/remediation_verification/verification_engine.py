@@ -77,20 +77,22 @@ class VerificationEngine(ABC):
     def run_resolver(self, root: Path, project: Path, targets: dict) -> None:
         """Resolve with exact pins (manifest -> package -> version) inside root, or raise."""
 
-    def verify(self, manifest_file: ManifestFile, recommendations: list) -> list[list[str]]:
+    def verify(self, manifest_file: ManifestFile, recommendations: list,
+               compatible_versions: list | None = None) -> list[list[str]]:
         """Resolve one common candidate per package and share only actual results.
 
         Multiple advisories may recommend the same parent. A chosen version must
         occur in every recommendation's qualifying list for that manifest.
+        `compatible_versions` is the reviewed compatible version per recommendation (the fallback pin).
         """
+        compatible_versions = compatible_versions or [None] * len(recommendations)
         groups = {}
         for index, recommendation in enumerate(recommendations):
-            recommendation.verified_version = None
             for candidate in recommendation.qualifying_upgrade_versions:
                 candidate.isVerified = False
                 candidate.verification_status = candidate.verification_message = None
             groups.setdefault(self.normalize_name(recommendation.package), []).append(index)
-        combined, members = [], []
+        combined, combined_compatible, members = [], [], []
         for indices in groups.values():
             originals = [recommendations[i] for i in indices]
             common = set.intersection(*[
@@ -105,19 +107,18 @@ class VerificationEngine(ABC):
             merged.qualifying_upgrade_versions = [copy(c) for c in originals[0].qualifying_upgrade_versions
                                                   if c.version in common]
             # A fallback must have compatibility evidence from every advisory.
-            compatible = {r.compatible_version for r in originals}
-            merged.compatible_version = (next(iter(compatible)) if len(compatible) == 1
-                                         and compatible <= common else None)
+            compatible = {compatible_versions[i] for i in indices}
+            combined_compatible.append(next(iter(compatible)) if len(compatible) == 1
+                                       and compatible <= common else None)
             combined.append(merged)
             members.append(indices)
-        results = self._verify_candidates(manifest_file, combined)
+        results = self._verify_candidates(manifest_file, combined, combined_compatible)
         verified = [[] for _ in recommendations]
         for merged, indices, versions in zip(combined, members, results):
             outcomes = {c.version: c for c in merged.qualifying_upgrade_versions}
             for index in indices:
                 recommendation = recommendations[index]
                 verified[index] = list(versions)
-                recommendation.verified_version = versions[0] if versions else None
                 for candidate in recommendation.qualifying_upgrade_versions:
                     outcome = outcomes.get(candidate.version)
                     if outcome is not None:
@@ -126,7 +127,8 @@ class VerificationEngine(ABC):
                         candidate.verification_message = outcome.verification_message
         return verified
 
-    def _verify_candidates(self, manifest_file: ManifestFile, recommendations: list) -> list[list[str]]:
+    def _verify_candidates(self, manifest_file: ManifestFile, recommendations: list,
+                           compatible_versions: list) -> list[list[str]]:
         """Return, per recommendation, the version that resolved (else empty).
 
         Every recommendation's minimum patched version is pinned together. Packages that fail
@@ -141,7 +143,7 @@ class VerificationEngine(ABC):
         failed = self._verify_set(manifest_file, recommendations, attempt, verified)
         fallbacks = {}
         for i, rejected in failed.items():
-            candidate = by_version(recommendations[i], recommendations[i].compatible_version)
+            candidate = by_version(recommendations[i], compatible_versions[i])
             if candidate is not None and candidate is not rejected:
                 fallbacks[i] = candidate
         if fallbacks:

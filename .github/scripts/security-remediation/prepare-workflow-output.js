@@ -46,13 +46,14 @@ function compareVersions(left, right) {
 function adaptTriagePackage(pkg) {
   if (!pkg.package) return pkg;
   const recommendations = pkg.package_upgrade_recommendations || [];
+  const verifiedVersions = pkg.verified_versions || {};
   const ownRecommendation = recommendations.find(recommendation =>
     recommendation.package.toLowerCase() === pkg.package.toLowerCase()
-    && recommendation.verified_version);
+    && verifiedVersions[recommendation.package]);
   return {
     ...pkg,
     remediation_package: pkg.package,
-    remediation_version: ownRecommendation?.verified_version || '',
+    remediation_version: ownRecommendation ? verifiedVersions[ownRecommendation.package] : '',
     minimum_upgradable_version: ownRecommendation?.minimum_patched_version || '',
     remediation_prs: pkg.pull_request_metadata || [],
     packages: [{ ...pkg, name: pkg.package, relationship: pkg.istransitive ? 'transitive' : 'direct' }],

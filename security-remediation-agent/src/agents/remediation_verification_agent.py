@@ -37,7 +37,7 @@ class RemediationVerificationAgent:
                     if id(recommendation) in seen:
                         continue
                     seen.add(id(recommendation))
-                    recommendation.verified_version = None
+                    triage.verified_versions[recommendation.package] = None
                     for candidate in recommendation.qualifying_upgrade_versions:
                         candidate.isVerified, candidate.verification_status, candidate.verification_message = False, None, None
                     if recommendation.qualifying_upgrade_versions and triage.manifest_path:
@@ -53,10 +53,12 @@ class RemediationVerificationAgent:
                 results = [[] for _ in recommendations]
             else:
                 isolated_manifest, isolated_recommendations = deepcopy((manifest_file, recommendations))
+                compatible_versions = [triage.compatible_version(recommendation.package)
+                                       for triage, recommendation in entries]
                 try:
                     results = await asyncio.wait_for(asyncio.to_thread(
-                        self._verify_snapshot, ecosystem, isolated_manifest, isolated_recommendations),
-                        VERIFICATION_TIMEOUT_SECONDS)
+                        self._verify_snapshot, ecosystem, isolated_manifest, isolated_recommendations,
+                        compatible_versions), VERIFICATION_TIMEOUT_SECONDS)
                     manifest_file = isolated_manifest
                     for original, checked in zip(recommendations, isolated_recommendations):
                         for candidate, outcome in zip(original.qualifying_upgrade_versions, checked.qualifying_upgrade_versions):
@@ -72,18 +74,18 @@ class RemediationVerificationAgent:
                 if manifest_file.verification_note not in triage.notes:
                     triage.notes = f"{triage.notes}\n{manifest_file.verification_note}".strip()
             for (triage, recommendation), versions in zip(entries, results):
-                recommendation.verified_version = versions[0] if versions else None
+                triage.verified_versions[recommendation.package] = versions[0] if versions else None
                 logger.info("Verification %s: %s", recommendation.package,
                             f"resolution_verified={versions}" if versions else "unresolved")
                 if not versions and not (manifest_file and manifest_file.baseline_failed):
                     self._note_failure(triage, recommendation)
         return remediation_plan
 
-    def _verify_snapshot(self, ecosystem, manifest, recommendations):
+    def _verify_snapshot(self, ecosystem, manifest, recommendations, compatible_versions):
         """Bound subprocess lifetimes and keep worker mutations private until completion."""
         token = VERIFICATION_DEADLINE.set(time.monotonic() + VERIFICATION_TIMEOUT_SECONDS)
         try:
-            return self.engine_factory.verify(ecosystem, manifest, recommendations)
+            return self.engine_factory.verify(ecosystem, manifest, recommendations, compatible_versions)
         finally:
             VERIFICATION_DEADLINE.reset(token)
 

@@ -26,14 +26,14 @@ class NpmVerificationEngine(VerificationEngine):
     def __init__(self):
         self._flags = None
 
-    def verify(self, manifest_file, recommendations):
+    def verify(self, manifest_file, recommendations, compatible_versions=None):
         """Reset policy state, run shared candidate verification, and record baseline or legacy-mode notes."""
         self._flags = None
         self._legacy_peer_deps = manifest_file.legacy_peer_deps
         manifest_file.baseline_failed = False
         manifest_file.verification_note = None
         try:
-            result = super().verify(manifest_file, recommendations)
+            result = super().verify(manifest_file, recommendations, compatible_versions)
         except BaselineResolutionError as exc:
             manifest_file.baseline_failed = True
             manifest_file.verification_note = f"Baseline resolution failed for {manifest_file.path}: {exc}"

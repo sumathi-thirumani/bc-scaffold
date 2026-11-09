@@ -122,7 +122,7 @@ class RemediationPlannerAgent:
             entries = [
                 {"package": recommendation.package, "current_version": recommendation.from_version,
                  "minimum_fixed_version": recommendation.minimum_patched_version,
-                 "compatible_version": recommendation.compatible_version,
+                 "compatible_version": package.compatible_version(recommendation.package),
                  "review_status": recommendation.compatible_review_status,
                  "highest_fixed_version": recommendation.highest_stable_version,
                  "qualifying_versions": [c.version for c in recommendation.qualifying_upgrade_versions]}
@@ -156,7 +156,7 @@ class RemediationPlannerAgent:
                                        if r.package.casefold() == entry["package"].casefold()), None)
                 if recommendation is not None and recommendation.requires_verification:
                     group["requires"] = True
-                    if not recommendation.verified_version:
+                    if not package.verified_version(recommendation.package):
                         group["unverified"] = True
                         by_message: dict[str, list[str]] = {}
                         for c in recommendation.qualifying_upgrade_versions:

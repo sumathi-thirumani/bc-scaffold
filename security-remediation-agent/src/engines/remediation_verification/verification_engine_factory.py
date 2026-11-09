@@ -28,10 +28,11 @@ class VerificationEngineFactory:
                 return engine_type()
         raise UnsupportedVerification(f"Resolution-only verification is not supported for {ecosystem}")
 
-    def verify(self, ecosystem: str, manifest_file: ManifestFile, recommendations: list) -> list[list[str]]:
+    def verify(self, ecosystem: str, manifest_file: ManifestFile, recommendations: list,
+               compatible_versions: list | None = None) -> list[list[str]]:
         """Verified versions per recommendation; empty where unsupported, unresolved or failed."""
         try:
-            return self.create(ecosystem).verify(manifest_file, recommendations)
+            return self.create(ecosystem).verify(manifest_file, recommendations, compatible_versions)
         except Exception as exc:
             logger.warning("Verification failed for %s: %s", manifest_file.path, exc)
             message = ("Verification skipped: manifest baseline failed; see manifest note"
@@ -42,7 +43,6 @@ class VerificationEngineFactory:
     @staticmethod
     def mark_failed(recommendations, message: str) -> None:
         for recommendation in recommendations:
-            recommendation.verified_version = None
             for candidate in recommendation.qualifying_upgrade_versions:
                 candidate.isVerified = False
                 candidate.verification_status = "FAILED"

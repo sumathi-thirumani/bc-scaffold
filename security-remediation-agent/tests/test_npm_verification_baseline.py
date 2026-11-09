@@ -5,15 +5,22 @@ from types import SimpleNamespace as NS
 import pytest
 
 from src.agents.remediation_verification_agent import RemediationVerificationAgent
+from src.models.security_package_triage import SecurityPackageTriage
 from src.engines.remediation_verification import npm_verification_engine as npm
 from src.engines.remediation_verification.verification_engine import ManifestFile
 from src.engines.remediation_verification.verification_engine_factory import VerificationEngineFactory
 
 
 def rec(name='example'):
-    return NS(package=name, compatible_version='2.0.0', verified_version=None,
+    return NS(package=name, default_compatible_version='2.0.0',
               qualifying_upgrade_versions=[NS(version='2.0.0', isVerified=False,
                                              verification_status=None, verification_message=None)])
+
+
+def triage_for(*recommendations):
+    return SecurityPackageTriage(package='child', vulnerablility_version_range='', vulnerablility_fixed_version='',
+                                 ecosystem='npm', manifest_path='web/package.json',
+                                 package_upgrade_recommendations=list(recommendations))
 
 
 @pytest.mark.parametrize('configured,strict_fails,expected', [
@@ -34,7 +41,7 @@ def test_baseline_and_pins_share_peer_policy(monkeypatch, configured, strict_fai
     monkeypatch.setattr(npm, 'run', resolve)
     manifest = ManifestFile('web/package.json', '{"dependencies":{"example":"1.0.0"}}', legacy_peer_deps=configured)
     recommendation = rec()
-    assert npm.NpmVerificationEngine().verify(manifest, [recommendation]) == [['2.0.0']]
+    assert npm.NpmVerificationEngine().verify(manifest, [recommendation], ['2.0.0']) == [['2.0.0']]
     assert [legacy for legacy, _ in calls] == expected
     assert calls[0][1] == '1.0.0'
     assert calls[-1][1] == '2.0.0'
@@ -58,7 +65,7 @@ def test_failed_baseline_skips_all_candidates(monkeypatch):
 def test_manifest_shared_across_bundles_has_one_failure_note(monkeypatch):
     calls = []
     class Factory:
-        def verify(self, ecosystem, manifest, recommendations):
+        def verify(self, ecosystem, manifest, recommendations, compatible_versions):
             calls.append(len(recommendations))
             manifest.baseline_failed = True
             manifest.verification_note = 'Baseline resolution failed for web/package.json'
@@ -67,8 +74,7 @@ def test_manifest_shared_across_bundles_has_one_failure_note(monkeypatch):
     async def manifest(*args):
         return ManifestFile('web/package.json', '{}')
     monkeypatch.setattr(agent, '_manifest_file', manifest)
-    triages = [NS(ecosystem='npm', manifest_path='web/package.json', notes='',
-                  package_upgrade_recommendations=[rec(name)]) for name in ['a', 'b']]
+    triages = [triage_for(rec(name)) for name in ['a', 'b']]
     plan = NS(remediation_plan_bundles=[NS(packages=[t]) for t in triages])
     asyncio.run(agent.verify(plan, {'owner': 'o', 'name': 'r'}))
     assert calls == [2]

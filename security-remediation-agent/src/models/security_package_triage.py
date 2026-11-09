@@ -76,14 +76,12 @@ class PackageUpgradeRecommendation:
     from_version: str
     minimum_patched_version: str = ""
     highest_stable_version: str = ""
-    compatible_version: str = ""
     source: Optional[str] = None
     pr_number: Optional[int] = None
     pull_url: Optional[str] = None
     pr_branch: Optional[str] = None
     qualifying_upgrade_versions: list[CandidatePackage] = field(default_factory=list)
     requires_verification: bool = False
-    verified_version: str | None = None
     # Outcome of the compatible-version review: upgrade_found, no_upgrade,
     # excluded, not_declared or review_failed. None means no review has run.
     compatible_review_status: str | None = None
@@ -91,7 +89,8 @@ class PackageUpgradeRecommendation:
     def __post_init__(self) -> None:
         """Derive bounds from stable qualifying upgrades, not all registry releases.
 
-        compatible_version is the lowest qualifying upgrade in the current major.
+        default_compatible_version is the lowest qualifying upgrade in the current major;
+        reviewed compatible and verified versions live on SecurityPackageTriage.
         """
         versions = {}
         try:
@@ -114,7 +113,7 @@ class PackageUpgradeRecommendation:
         self.qualifying_upgrade_versions = [versions[version] for version in ordered]
         self.minimum_patched_version = self.qualifying_upgrade_versions[0].version if ordered else ""
         self.highest_stable_version = self.qualifying_upgrade_versions[-1].version if ordered else ""
-        self.compatible_version = next(
+        self.default_compatible_version = next(
             (versions[version].version for version in ordered if current is not None and version.major == current.major),
             "",
         )
@@ -145,9 +144,22 @@ class SecurityPackageTriage:
     # component relationship
     transitive_dependency_occurrences: list[TransistiveOccurances] = field(default_factory=list)
     package_upgrade_recommendations: list[PackageUpgradeRecommendation] = field(default_factory=list)
+    # Reviewed compatible and verified versions, keyed by recommendation package name.
+    compatible_versions: dict[str, str] = field(default_factory=dict)
+    verified_versions: dict[str, str | None] = field(default_factory=dict)
 
     #pulls - remediation & update consolidation
     is_pull_available: bool = False
     pull_request_metadata: list[PullRequestMetadata] = field(default_factory=list)
     notes: str = ""
     is_update: bool = False
+
+    def compatible_version(self, package: str) -> str:
+        """Reviewed compatible version, else the recommendation's same-major default."""
+        if package in self.compatible_versions:
+            return self.compatible_versions[package]
+        recommendation = next((r for r in self.package_upgrade_recommendations if r.package == package), None)
+        return recommendation.default_compatible_version if recommendation else ""
+
+    def verified_version(self, package: str) -> str | None:
+        return self.verified_versions.get(package)

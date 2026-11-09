@@ -78,15 +78,15 @@ class PlanExport:
     bundles: list[ExportBundle] = field(default_factory=list)
 
 
-def _recommendation(recommendation) -> ExportRecommendation:
+def _recommendation(recommendation, triage) -> ExportRecommendation:
     candidates = recommendation.qualifying_upgrade_versions
     return ExportRecommendation(
         package=recommendation.package,
         from_version=recommendation.from_version,
         minimum_patched_version=recommendation.minimum_patched_version,
-        compatible_version=recommendation.compatible_version,
+        compatible_version=triage.compatible_version(recommendation.package),
         highest_stable_version=recommendation.highest_stable_version,
-        verified_version=recommendation.verified_version,
+        verified_version=triage.verified_version(recommendation.package),
         compatible_review_status=recommendation.compatible_review_status,
         candidates=[candidate.version for candidate in candidates],
         verification=[ExportAttempt(c.version, c.verification_status, c.verification_message)
@@ -109,7 +109,7 @@ def _package(triage) -> ExportPackage:
             ExportVulnerability(v.number, v.ghsa_id, v.cve_id, v.severity, v.cvss,
                                 v.vulnerable_range, v.first_patched)
             for v in triage.vulnerabilities],
-        recommendations=[_recommendation(r) for r in triage.package_upgrade_recommendations],
+        recommendations=[_recommendation(r, triage) for r in triage.package_upgrade_recommendations],
         transitive_dependency_occurrences=triage.transitive_dependency_occurrences,
         scanning_alerts=triage.scanning_alerts,
         is_pull_available=triage.is_pull_available,

@@ -8,13 +8,13 @@ test('adapts triage packages and only uses verified recommendations as upgrade t
       { package: 'child', istransitive: true, manifest_path: 'web/package-lock.json',
         vulnerabilities: [{ severity: 'high', ghsa_id: 'GHSA-child' }],
         transitive_dependency_occurrences: [{ package: 'child', introducers: [{ package: 'parent' }] }],
-        package_upgrade_recommendations: [{ package: 'parent', verified_version: '2.0.0' }] },
+        package_upgrade_recommendations: [{ package: 'parent' }], verified_versions: { parent: '2.0.0' } },
       { package: 'direct', current_version: '1.0.0', severity: 'high',
-        package_upgrade_recommendations: [{ package: 'direct', minimum_patched_version: '1.1.0',
-          verified_version: '1.2.0' }] },
+        package_upgrade_recommendations: [{ package: 'direct', minimum_patched_version: '1.1.0' }],
+        verified_versions: { direct: '1.2.0' } },
       { package: 'unverified', severity: 'high', vulnerablility_fixed_version: '2.0.0',
-        package_upgrade_recommendations: [{ package: 'unverified', highest_stable_version: '3.0.0',
-          verified_version: null }] },
+        package_upgrade_recommendations: [{ package: 'unverified', highest_stable_version: '3.0.0' }],
+        verified_versions: { unverified: null } },
     ] }] };
   const plans = prepareOutput(raw).groups.high.plans;
   assert.deepEqual(plans.map(plan => plan.package.name), ['child', 'direct', 'unverified']);

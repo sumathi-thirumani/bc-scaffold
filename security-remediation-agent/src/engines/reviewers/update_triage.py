@@ -23,10 +23,10 @@ def add_update_triage(
             package=package, from_version=current, qualifying_upgrade_versions=[version],
             compatible_review_status="upgrade_found",
         )
-        recommendation.compatible_version = version
         bundle.packages.append(SecurityPackageTriage(
             package=package, vulnerablility_version_range="", vulnerablility_fixed_version="",
             current_version=current, ecosystem=anchor.ecosystem, manifest_path=anchor.manifest_path,
             package_upgrade_recommendations=[recommendation], is_update=True,
+            compatible_versions={package: version},
         ))
         return
