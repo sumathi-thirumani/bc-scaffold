@@ -50,6 +50,8 @@ class PackageRecommendationResolver:
         """Populate direct PR or transitive parent upgrade recommendations."""
         if not triage.istransitive:
             self._populate_direct_recommendations(triage, pull_requests_by_package)
+            if not triage.package_upgrade_recommendations:
+                await self._populate_registry_recommendation(triage)
             return
 
         try:
@@ -116,6 +118,56 @@ class PackageRecommendationResolver:
         triage.package_upgrade_recommendations = recommendations
         triage.is_pull_available = False
         triage.pull_request_metadata = []
+
+    async def _populate_registry_recommendation(self, triage: SecurityPackageTriage) -> None:
+        """Give a direct package without a bot PR registry-based candidates, like a parent has.
+
+        The required fix is the highest patched version within the current major when
+        advisories provide one, so a package on 0.x is not forced to a 1.x-only fix."""
+        try:
+            current = Version(triage.current_version)
+            fixed = Version(triage.vulnerablility_fixed_version)
+        except InvalidVersion:
+            return
+        same_major = []
+        for alert in triage.vulnerabilities:
+            try:
+                patched = Version(alert.first_patched)
+            except InvalidVersion:
+                continue
+            if patched.major == current.major:
+                same_major.append(patched)
+        required = max(same_major) if same_major else fixed
+        try:
+            versions = await self._registry_versions(triage.ecosystem, triage.package)
+        except Exception as exc:
+            logger.warning("Cannot list registry versions for %s: %s", triage.package, exc)
+            return
+        candidates = []
+        for raw in versions:
+            try:
+                if Version(raw) >= required:
+                    candidates.append(raw)
+            except InvalidVersion:
+                continue
+        if candidates:
+            triage.package_upgrade_recommendations = [PackageUpgradeRecommendation(
+                package=triage.package, from_version=triage.current_version,
+                qualifying_upgrade_versions=candidates, requires_verification=True, source="registry",
+            )]
+
+    async def _registry_versions(self, ecosystem: str, package: str) -> list[str]:
+        factory = self.resolver_factory
+        kind = ecosystem.lower()
+        if kind in {"npm", "npm_and_yarn"}:
+            data = await factory.npm_metadata.get(package)
+            return [version for version, manifest in (data.get("versions") or {}).items()
+                    if not (isinstance(manifest, dict) and manifest.get("deprecated"))]
+        if kind in {"pip", "pypi", "poetry"}:
+            return await factory.pypi_metadata.list_versions_descending(package)
+        if kind == "nuget":
+            return [release.raw for release in await factory.nuget_metadata.get(package)]
+        return []
 
     def _populate_direct_recommendations(
         self,

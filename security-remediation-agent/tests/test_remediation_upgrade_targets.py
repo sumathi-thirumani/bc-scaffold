@@ -76,21 +76,18 @@ def test_missing_parent_recommendation_has_separate_target_from_known_upgrade():
     )
     for packages in ([known, unresolved], [unresolved, known]):
         targets = RemediationPlannerAgent._build_upgrade_targets(packages)
-        assert len(targets) == 2
-        upgrade = next(target for target in targets if target["minimum_fixed_version"])
+        assert len(targets) == 1
+        upgrade = targets[0]
         assert upgrade == {
             "package": "eslint", "current_version": "10.11.0", "minimum_fixed_version": "10.12.0",
             "compatible_version": "10.12.0", "highest_fixed_version": "10.14.0",
-            "affected_packages": ["brace-expansion"],
+            "affected_packages": ["brace-expansion", "minimatch"],
             "manifest_path": None, "is_update": False, "verification_status": None, "verification_notes": "", "verified_version": "",
         }
-        review = next(target for target in targets if not target["minimum_fixed_version"])
-        assert review["affected_packages"] == ["minimatch"]
-        assert review["package"] == "eslint"
     unresolved.package_upgrade_recommendations = [PackageUpgradeRecommendation(
         package="eslint", from_version="10.11.0",
     )]
-    assert len(RemediationPlannerAgent._build_upgrade_targets([known, unresolved])) == 2
+    assert len(RemediationPlannerAgent._build_upgrade_targets([known, unresolved])) == 1
 
 
 def test_planner_refreshes_targets_after_compatible_version_review():

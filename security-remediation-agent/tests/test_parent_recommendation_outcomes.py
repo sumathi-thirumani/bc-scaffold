@@ -1,5 +1,5 @@
 import pytest
-
+from types import SimpleNamespace
 from src.engines.package_recommendation_resolver import PackageRecommendationResolver
 from src.engines.resolvers.recommendation_resolver_factory import (
     NuGetParentResolution,
@@ -36,6 +36,27 @@ async def test_unresolved_parent_yields_no_recommendation_but_records_action(act
     assert recommendation is None
     assert introducer.recommendation_action == action
     assert introducer.recommended_version is None
+
+
+@pytest.mark.asyncio
+async def test_direct_package_without_pr_uses_registry_versions_in_current_major():
+    class Npm:
+        async def get(self, package):
+            return {"versions": {v: {} for v in ["0.28.1", "0.33.0", "0.34.0", "0.35.0", "1.20.0"]}}
+
+    alerts = [SimpleNamespace(first_patched="0.34.0"), SimpleNamespace(first_patched="1.20.0")]
+    triage = SecurityPackageTriage(
+        package="axios", vulnerablility_version_range="<1.20.0", vulnerablility_fixed_version="1.20.0",
+        current_version="0.28.1", ecosystem="npm", vulnerabilities=alerts,
+    )
+    resolver = PackageRecommendationResolver(SimpleNamespace(npm_metadata=Npm()))
+
+    await resolver.populate_remediation_version(triage, {})
+
+    [recommendation] = triage.package_upgrade_recommendations
+    assert recommendation.requires_verification
+    assert [c.version for c in recommendation.qualifying_upgrade_versions] == ["0.34.0", "0.35.0", "1.20.0"]
+    assert triage.compatible_version("axios") == "0.34.0"
 
 
 @pytest.mark.asyncio

@@ -154,6 +154,12 @@ class RemediationPlannerAgent:
                 group["is_update"] = group["is_update"] or package.is_update
                 recommendation = next((r for r in package.package_upgrade_recommendations
                                        if r.package.casefold() == entry["package"].casefold()), None)
+                if recommendation is None:
+                    # The resolver records why no parent upgrade was found as "<parent> <version> (<action>): <reason>".
+                    prefix = f"{entry['package'].casefold()} "
+                    for note in package.notes.splitlines():
+                        if note.casefold().startswith(prefix) and note not in group["notes"]:
+                            group["notes"].append(note)
                 if recommendation is not None and recommendation.requires_verification:
                     group["requires"] = True
                     if package.verified_version(recommendation.package):
@@ -174,7 +180,7 @@ class RemediationPlannerAgent:
                                 group["notes"].append(note)
 
         targets = []
-        for group in grouped.values():
+        for key, group in grouped.items():
             entries = group["entries"]
             target = {key: value for key, value in entries[0].items() if key not in {"qualifying_versions", "review_status"}}
             target["is_update"] = group["is_update"]
@@ -240,6 +246,15 @@ class RemediationPlannerAgent:
             target["compatible_version"] = parsed[chosen] if chosen is not None else ""
             if target["verification_status"] is None and chosen is None:
                 target["verification_status"] = "NOT VERIFIED"
-                target["verification_notes"] = target["verification_notes"] or "No compatible upgrade candidate was available to verify."
-            targets.append(target)
-        return targets
+                target["verification_notes"] = target["verification_notes"] or "No upgrade candidate was identified for this package, so there was nothing to verify."
+            targets.append((key, target))
+        # An unresolved entry for a package that has a fixed target is folded into it.
+        fixed = {key[:3]: target for key, target in targets if key[3]}
+        merged = []
+        for key, target in targets:
+            owner = fixed.get(key[:3])
+            if key[3] or owner is None:
+                merged.append(target)
+            else:
+                owner["affected_packages"] = sorted({*owner["affected_packages"], *target["affected_packages"]})
+        return merged

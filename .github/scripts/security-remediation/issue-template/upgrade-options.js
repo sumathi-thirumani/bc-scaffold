@@ -43,7 +43,8 @@ function buildUpgradeOptionsSection(plans, bundleTargets) {
   const selectedPackages = new Set(plans.map(plan => plan.package.name.toLowerCase()));
   // Same selection as the acceptance criteria, so parent upgrades for transitive findings are included.
   const targets = bundleTargets.filter(target => (target.affected_packages || [])
-    .some(name => selectedPackages.has(name.toLowerCase())));
+    .some(name => selectedPackages.has(name.toLowerCase())))
+    .sort((a, b) => a.package.localeCompare(b.package, undefined, { sensitivity: 'base' }));
   if (targets.length === 0) return '';
 
   return '## Dependency Compatibility Analysis\n\n' +
