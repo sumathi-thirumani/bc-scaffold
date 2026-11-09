@@ -5,7 +5,8 @@ const COLUMN_DETAILS = [
   ['Package', 'Package requiring an upgrade (a direct dependency, or the parent of a vulnerable transitive dependency)'],
   ['Current', 'Currently declared or resolved version'],
   ['Minimum Fix', 'Lowest candidate expected to address the vulnerability'],
-  ['Compatible Upgrade', 'Highest upgrade satisfying the existing version/compatibility policy, whether patched or not'],
+  ['Compatible Version', 'Highest version satisfying the existing version/compatibility policy, whether patched or not'],
+  ['Verified Version', 'Version that passed dependency resolution during verification; blank when not verified'],
   ['Latest Available', 'Newest published stable version, regardless of compatibility'],
   ['Is Optional Update', 'Yes when this is an optional non-vulnerable update rather than a vulnerability fix; blank otherwise'],
   ['Verification Status', 'SUCCESS, FAILED (candidates conflicted) or NOT VERIFIED (no candidate or the runner could not verify, e.g. missing tool or timeout); details are listed under the table'],
@@ -23,7 +24,7 @@ function verificationCell(target) {
 
 function row(target) {
   return `| \`${target.package}\` | ${cell(target.current_version)} | ${cell(target.minimum_fixed_version)} ` +
-    `| ${cell(target.compatible_upgrade)} | ${cell(target.latest_available || target.highest_fixed_version)} ` +
+    `| ${cell(target.compatible_version)} | ${cell(target.verified_version)} | ${cell(target.latest_available || target.highest_fixed_version)} ` +
     `| ${target.is_update ? 'Yes' : ''} | ${verificationCell(target)} |`;
 }
 
@@ -48,8 +49,8 @@ function buildUpgradeOptionsSection(plans, bundleTargets) {
   return '## Dependency Compatibility Analysis\n\n' +
     'The following upgrade options are identified for each package that needs an upgrade (direct dependencies and parents of transitive ones). ' +
     'Recommendations prioritize the minimum version that resolves the identified vulnerabilities and passes dependency compatibility validation.\n\n' +
-    '| Package | Current | Minimum Fix | Compatible Upgrade | Latest Available | Is Optional Update | Verification Status |\n' +
-    '|---|---|---|---|---|---|---|\n' +
+    '| Package | Current | Minimum Fix | Compatible Version | Verified Version | Latest Available | Is Optional Update | Verification Status |\n' +
+    '|---|---|---|---|---|---|---|---|\n' +
     `${targets.map(row).join('\n')}\n\n` +
     failureNotes(targets) +
     '<details>\n<summary>Column reference</summary>\n\n' +

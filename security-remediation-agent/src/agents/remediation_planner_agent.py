@@ -147,7 +147,7 @@ class RemediationPlannerAgent:
                 key = (package.ecosystem.lower(), manifest_path,
                        entry["package"].casefold(), bool(entry["minimum_fixed_version"]))
                 group = grouped.setdefault(key, {"entries": [], "affected_packages": set(), "is_update": False,
-                                                 "requires": False, "unverified": False, "real_failure": False, "notes": []})
+                                                 "requires": False, "unverified": False, "real_failure": False, "notes": [], "verified": set()})
                 if entry not in group["entries"]:
                     group["entries"].append(entry)
                 group["affected_packages"].add(package.package)
@@ -156,7 +156,9 @@ class RemediationPlannerAgent:
                                        if r.package.casefold() == entry["package"].casefold()), None)
                 if recommendation is not None and recommendation.requires_verification:
                     group["requires"] = True
-                    if not package.verified_version(recommendation.package):
+                    if package.verified_version(recommendation.package):
+                        group["verified"].add(package.verified_version(recommendation.package))
+                    else:
                         group["unverified"] = True
                         by_message: dict[str, list[str]] = {}
                         for c in recommendation.qualifying_upgrade_versions:
@@ -180,6 +182,8 @@ class RemediationPlannerAgent:
                 None if not group["requires"] else "SUCCESS" if not group["unverified"]
                 else "FAILED" if group["real_failure"] else "NOT VERIFIED")
             target["verification_notes"] = "\n".join(group["notes"])
+            target["verified_version"] = (
+                ", ".join(sorted(group["verified"])) if target["verification_status"] == "SUCCESS" else "")
             target["affected_packages"] = sorted(group["affected_packages"])
             current_versions = sorted({entry["current_version"] for entry in entries if entry["current_version"]})
             target["current_version"] = ", ".join(current_versions)

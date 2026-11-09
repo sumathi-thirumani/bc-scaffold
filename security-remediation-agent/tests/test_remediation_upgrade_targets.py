@@ -22,7 +22,7 @@ def test_planner_consolidates_shared_target_in_bundle():
         "compatible_version": "7.2.0", "highest_fixed_version": "8.0.0",
         "affected_packages": ["fast-uri", "undici"],
         "manifest_path": None, "is_update": False, "verification_status": None, "verification_notes": "",
-    }]
+        "verified_version": "",    }]
     packages[1].package_upgrade_recommendations[0].qualifying_upgrade_versions = []
     targets = RemediationPlannerAgent._build_upgrade_targets(packages)
     assert len(targets) == 1
@@ -82,7 +82,7 @@ def test_missing_parent_recommendation_has_separate_target_from_known_upgrade():
             "package": "eslint", "current_version": "10.11.0", "minimum_fixed_version": "10.12.0",
             "compatible_version": "10.12.0", "highest_fixed_version": "10.14.0",
             "affected_packages": ["brace-expansion"],
-            "manifest_path": None, "is_update": False, "verification_status": None, "verification_notes": "",
+            "manifest_path": None, "is_update": False, "verification_status": None, "verification_notes": "", "verified_version": "",
         }
         review = next(target for target in targets if not target["minimum_fixed_version"])
         assert review["affected_packages"] == ["minimatch"]
