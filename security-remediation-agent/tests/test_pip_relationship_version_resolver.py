@@ -95,6 +95,37 @@ def test_pip_dry_run_report_resolves_direct_and_transitive_paths(monkeypatch):
     ]
 
 
+def test_compiled_pins_resolve_versions_while_source_file_defines_direct_packages(monkeypatch):
+    from packaging.markers import default_environment
+    default_environment()
+    calls = []
+    report = _report()
+    for item in report["install"]:
+        item["requested"] = True  # a compiled file marks every pin as requested
+
+    def run(command, **kwargs):
+        calls.append(command)
+        Path(command[command.index("--report") + 1]).write_text(json.dumps(report), encoding="utf-8")
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(
+        "src.engines.resolvers.relationship_version_resolvers.pip_relationship_version_resolver.subprocess.run",
+        run,
+    )
+    resolver = PipRelationshipVersionResolver(
+        "app==1.0.0\nmiddle==1.5.0\nvulnerable==3.2.0\nfeaturedep==1.4.0\n",
+        requirements_path="api/requirements.txt",
+        source_path="api/requirements.in",
+        source_text="app\n",
+    )
+
+    [occurrence] = resolver.resolve("vulnerable")["occurrences"]
+
+    assert calls[0][-2:] == ["-r", "api/requirements.txt"]
+    assert occurrence["is_root"] is False
+    assert [node["package"] for node in occurrence["paths"][0]] == ["app", "middle", "vulnerable"]
+
+
 def test_pip_failure_logs_captured_diagnostics(monkeypatch, caplog):
     monkeypatch.setattr(
         "src.engines.resolvers.relationship_version_resolvers.pip_relationship_version_resolver.subprocess.run",
@@ -189,7 +220,7 @@ async def test_source_dry_run_keeps_starlette_parent_paths(monkeypatch, declared
         istransitive=False, vulnerablility_version_range="<0.51", vulnerablility_fixed_version="0.51",
     )
     await PackageRelationshipResolver(manifest_tool=tool).populate("owner", "repo", [item], ref="main")
-    assert reports == [("api/requirements.in", source)]
+    assert reports == [("api/requirements.txt", compiled)]
     assert item.istransitive is not declared_starlette
     [occurrence] = item.transitive_dependency_occurrences
     assert occurrence.version == "0.50.0"

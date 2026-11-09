@@ -53,6 +53,8 @@ class PipRelationshipVersionResolver:
         *,
         requirements_path: str = "requirements.txt",
         support_files: Mapping[str, str] | None = None,
+        source_path: str | None = None,
+        source_text: str | None = None,
         timeout_seconds: int = 300,
     ) -> None:
         """Validate input paths and retain requirement/support files for staging."""
@@ -67,6 +69,10 @@ class PipRelationshipVersionResolver:
             raise ValueError("timeout_seconds must be positive")
         self.requirements_text = requirements_text
         self.requirements_path = path.as_posix()
+        # Optional source file (requirements.in): when the resolved file holds compiled
+        # pins, only the source file's own requirements count as direct.
+        self.source_path = PurePosixPath(source_path.replace("\\", "/")).as_posix() if source_path and source_text else None
+        self.source_text = source_text if self.source_path else None
         self.support_files = {}
         for raw_path, text in (support_files or {}).items():
             support_path = PurePosixPath(raw_path.replace("\\", "/"))
@@ -157,6 +163,7 @@ class PipRelationshipVersionResolver:
 
     def _load_report(self, report: dict) -> None:
         """Index report packages and parse valid Requires-Dist dependency declarations."""
+        source_names = set(self._direct_extras()) if self.source_path else None
         for item in report["install"]:
             metadata = item.get("metadata") if isinstance(item, dict) else None
             if not isinstance(metadata, dict):
@@ -176,7 +183,8 @@ class PipRelationshipVersionResolver:
             self._packages[node] = _Package(
                 name=name,
                 version=version,
-                requested=bool(item.get("requested")),
+                requested=(canonicalize_name(name) in source_names if source_names is not None
+                           else bool(item.get("requested"))),
                 requires_dist=requirements,
             )
             if node not in self._by_name[node[0]]:
@@ -187,6 +195,8 @@ class PipRelationshipVersionResolver:
         extras: dict[str, set[str]] = defaultdict(set)
 
         files = {**self.support_files, self.requirements_path: self.requirements_text}
+        if self.source_path:
+            files[self.source_path] = self.source_text
         visited: set[str] = set()
 
         def visit(path: str) -> None:
@@ -228,7 +238,7 @@ class PipRelationshipVersionResolver:
                     continue
                 extras[canonicalize_name(requirement.name)].update(requirement.extras)
 
-        visit(self.requirements_path)
+        visit(self.source_path or self.requirements_path)
         return extras
 
     def _build_parent_graph(self) -> None:

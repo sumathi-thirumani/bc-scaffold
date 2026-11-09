@@ -40,6 +40,8 @@ class RelationshipResolverFactory:
         project_files: Mapping[str, str] | None = None,
         support_files: Mapping[str, str] | None = None,
         requirements_path: str = "requirements.txt",
+        source_path: str | None = None,
+        source_text: str | None = None,
     ) -> RelationshipResolver:
         normalized_ecosystem = ecosystem.lower()
         if normalized_ecosystem in {"npm", "npm_and_yarn"}:
@@ -61,6 +63,8 @@ class RelationshipResolverFactory:
                 lock_text,
                 requirements_path=requirements_path,
                 support_files=support_files,
+                source_path=source_path,
+                source_text=source_text,
             )
         if normalized_ecosystem == "poetry":
             if project_text is None:

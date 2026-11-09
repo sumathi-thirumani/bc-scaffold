@@ -202,6 +202,16 @@ class PackageRelationshipResolver:
                 )
                 if not requirements_text:
                     return None
+                # Resolve the compiled pins so current versions match the repository; the
+                # source .in file then only decides which packages are direct.
+                source_path = source_text = None
+                if (PurePosixPath(lock_path.replace("\\", "/")).suffix.lower() == ".txt"
+                        and requirements_path != PurePosixPath(lock_path.replace("\\", "/")).as_posix()):
+                    pinned_path = PurePosixPath(lock_path.replace("\\", "/")).as_posix()
+                    pinned_text = await self.manifest_tool.get(owner, repo, pinned_path, ref)
+                    if pinned_text:
+                        source_path, source_text = requirements_path, requirements_text
+                        requirements_path, requirements_text = pinned_path, pinned_text
                 support_files = {}
                 try:
                     entries = await self.manifest_tool.repository_tree(owner, repo, ref)
@@ -211,7 +221,7 @@ class PackageRelationshipResolver:
                         and PurePosixPath(entry["path"]).name.lstrip(".").lower().startswith(
                             ("requirements", "constraints")
                         )
-                        and entry["path"] != requirements_path
+                        and entry["path"] not in {requirements_path, source_path}
                     )
                     support_contents = await asyncio.gather(
                         *(self.manifest_tool.get(owner, repo, path, ref) for path in support_paths)
@@ -228,6 +238,8 @@ class PackageRelationshipResolver:
                     requirements_text,
                     requirements_path=requirements_path,
                     support_files=support_files,
+                    source_path=source_path,
+                    source_text=source_text,
                 )
 
             text = await self.manifest_tool.get(owner, repo, lock_path, ref)
