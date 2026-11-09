@@ -7,8 +7,8 @@ const COLUMN_DETAILS = [
   ['Minimum Fix', 'Lowest candidate expected to address the vulnerability'],
   ['Compatible Upgrade', 'Highest upgrade satisfying the existing version/compatibility policy, whether patched or not'],
   ['Latest Available', 'Newest published stable version, regardless of compatibility'],
-  ['Is Update', 'Yes when this is an additional non-vulnerable update rather than a vulnerability fix'],
-  ['Verification Status', 'Resolver verification outcome; hover over a failed status to see the notes'],
+  ['Is Optional Update', 'Yes when this is an optional non-vulnerable update rather than a vulnerability fix; blank otherwise'],
+  ['Verification Status', 'Resolver verification outcome; failure details are listed under the table'],
 ];
 
 const cell = value => (value ? `\`${value}\`` : '—');
@@ -24,7 +24,17 @@ function verificationCell(target) {
 function row(target) {
   return `| \`${target.package}\` | ${cell(target.current_version)} | ${cell(target.minimum_fixed_version)} ` +
     `| ${cell(target.compatible_upgrade)} | ${cell(target.latest_available || target.highest_fixed_version)} ` +
-    `| ${target.is_update ? 'Yes' : 'No'} | ${verificationCell(target)} |`;
+    `| ${target.is_update ? 'Yes' : ''} | ${verificationCell(target)} |`;
+}
+
+function failureNotes(targets) {
+  const failed = targets.filter(target => target.verification_status === 'FAILED');
+  if (failed.length === 0) return '';
+  const lines = failed.map(target => {
+    const notes = (target.verification_notes || '').split('\n').filter(Boolean).join('; ');
+    return `- \`${target.package}\`: ${notes || 'verification failed; no details were captured.'}`;
+  });
+  return `**Verification failures**\n\n${lines.join('\n')}\n\n`;
 }
 
 function buildUpgradeOptionsSection(plans, bundleTargets) {
@@ -35,12 +45,14 @@ function buildUpgradeOptionsSection(plans, bundleTargets) {
     .some(name => selectedPackages.has(name.toLowerCase())));
   if (targets.length === 0) return '';
 
-  return '<details>\n<summary>Dependency Compatibility Analysis</summary>\n\n' +
+  return '## Dependency Compatibility Analysis\n\n' +
     'The following upgrade options are identified for each package that needs an upgrade (direct dependencies and parents of transitive ones). ' +
     'Recommendations prioritize the minimum version that resolves the identified vulnerabilities and passes dependency compatibility validation.\n\n' +
-    '| Package | Current | Minimum Fix | Compatible Upgrade | Latest Available | Is Update | Verification Status |\n' +
+    '| Package | Current | Minimum Fix | Compatible Upgrade | Latest Available | Is Optional Update | Verification Status |\n' +
     '|---|---|---|---|---|---|---|\n' +
     `${targets.map(row).join('\n')}\n\n` +
+    failureNotes(targets) +
+    '<details>\n<summary>Column reference</summary>\n\n' +
     '| Column | Meaning |\n|---|---|\n' +
     `${COLUMN_DETAILS.map(([name, meaning]) => `| ${name} | ${meaning} |`).join('\n')}\n\n</details>\n\n`;
 }
