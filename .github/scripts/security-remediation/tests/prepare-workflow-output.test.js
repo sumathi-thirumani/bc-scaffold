@@ -26,6 +26,17 @@ test('adapts triage packages and only uses verified recommendations as upgrade t
   assert.ok(plans.every(plan => plan.action.action_type === 'open_issue'));
 });
 
+test('a pinned transitive package shows its compatible version as the upgrade target', () => {
+  const raw = { remediation_plan_bundles: [{ ecosystem: 'nuget', packages: [
+    { package: 'Newtonsoft.Json', istransitive: true, severity: 'high', current_version: '11.0.1',
+      package_upgrade_recommendations: [{ package: 'Newtonsoft.Json', source: 'transitive_pin',
+        minimum_patched_version: '13.0.1' }],
+      compatible_versions: { 'Newtonsoft.Json': '13.0.3' }, verified_versions: {} },
+  ] }] };
+  const [plan] = prepareOutput(raw).groups.high.plans;
+  assert.equal(plan.fix.upgrade_version, '13.0.3');
+});
+
 test('normalizes moderate and medium in filters, alerts, and issue severity', () => {
   const raw = { plan_id: 'alias', remediation_plan_bundles: [
     { groupName: 'group-a', ecosystem: 'npm', packages: [

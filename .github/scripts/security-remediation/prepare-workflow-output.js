@@ -49,11 +49,14 @@ function adaptTriagePackage(pkg) {
   const verifiedVersions = pkg.verified_versions || {};
   const ownRecommendation = recommendations.find(recommendation =>
     recommendation.package.toLowerCase() === pkg.package.toLowerCase()
-    && verifiedVersions[recommendation.package]);
+    && (verifiedVersions[recommendation.package] || recommendation.source === 'transitive_pin'));
+  // A pinned transitive is not restore-verified, so its planned version is the compatible or minimum fix.
+  const ownVersion = ownRecommendation && (verifiedVersions[ownRecommendation.package]
+    || (pkg.compatible_versions || {})[ownRecommendation.package] || ownRecommendation.minimum_patched_version);
   return {
     ...pkg,
     remediation_package: pkg.package,
-    remediation_version: ownRecommendation ? verifiedVersions[ownRecommendation.package] : '',
+    remediation_version: ownVersion || '',
     minimum_upgradable_version: ownRecommendation?.minimum_patched_version || '',
     remediation_prs: pkg.pull_request_metadata || [],
     packages: [{ ...pkg, name: pkg.package, relationship: pkg.istransitive ? 'transitive' : 'direct' }],
