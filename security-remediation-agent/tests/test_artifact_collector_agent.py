@@ -42,6 +42,22 @@ async def test_prefetches_repository_manifests_without_dependabot_alerts():
 
 
 @pytest.mark.asyncio
+async def test_alerts_for_manifests_missing_from_the_repository_are_dropped():
+    tool = ManifestTool(token="token")
+    tool.repository_tree = AsyncMock(return_value=[{"path": "api/requirements.txt"}])
+    tool.get = AsyncMock(return_value="file content")
+    alerts = [
+        SimpleNamespace(ecosystem="pip", manifest_path="requirements.txt"),
+        SimpleNamespace(ecosystem="pip", manifest_path="api/requirements.txt"),
+    ]
+    findings = SimpleNamespace(dependabot_alerts=alerts)
+
+    await ArtifactCollectorAgent(manifest_tool=tool)._prefetch_manifests("o", "r", findings, "master")
+
+    assert [a.manifest_path for a in findings.dependabot_alerts] == ["api/requirements.txt"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("ref", ["main", "release/test"])
 async def test_collection_uses_context_ref_and_refreshes_cache_between_runs(ref):
     tool = ManifestTool(token="token")

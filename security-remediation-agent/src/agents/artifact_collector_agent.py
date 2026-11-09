@@ -74,6 +74,29 @@ class ArtifactCollectorAgent:
         except Exception:
             logger.warning("Manifest prefetch aborted for %s/%s", owner, repo, exc_info=True)
 
+    @staticmethod
+    def _drop_alerts_for_missing_manifests(
+        owner: str, repo: str, findings: SecurityFindings, tree: list[dict[str, str]],
+    ) -> None:
+        """Drop alerts whose manifest is not in the repository tree: they cannot be remediated.
+
+        Dependabot can keep alerts for paths that do not exist at the base ref, for
+        example from a dependency snapshot reporting root-relative paths."""
+        files = {entry["path"] for entry in tree}
+        if not files:
+            return
+        kept, skipped = [], []
+        for alert in findings.dependabot_alerts:
+            path = (alert.manifest_path or "").replace("\\", "/").strip("/")
+            (kept if not path or path in files else skipped).append(alert)
+        if skipped:
+            logger.warning(
+                "Skipped %d Dependabot alert(s) for %s/%s whose manifest is not in the repository: %s",
+                len(skipped), owner, repo,
+                ", ".join(sorted({a.manifest_path for a in skipped})),
+            )
+            findings.dependabot_alerts[:] = kept
+
     async def _prefetch_manifests(
         self,
         owner: str,
@@ -107,6 +130,7 @@ class ArtifactCollectorAgent:
                 exc,
             )
         else:
+            self._drop_alerts_for_missing_manifests(owner, repo, findings, tree)
             for entry in tree:
                 path = entry["path"]
                 if self.manifest_tool.is_dependency_manifest(path):

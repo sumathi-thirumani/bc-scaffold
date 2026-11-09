@@ -52,7 +52,6 @@ function buildCategoryDetailSections(ecosystem, categoryMap, groupPlansSet, grou
   let body = '';
   forEachCategory(ecosystem, categoryMap, groupPlansSet, (category, plans, impact, action) => {
     if (!body) body = '## Vulnerability Findings & Dependency Graph\n\n';
-    body += `**${IMP_LABEL[impact]} - ${ACT_LABEL[action]} Updates**\n\n`;
 
     if (action === 'placeholder') {
       const placeholderPRs = groupPRs(category) || [];
