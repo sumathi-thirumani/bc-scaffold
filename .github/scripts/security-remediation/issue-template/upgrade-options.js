@@ -8,7 +8,7 @@ const COLUMN_DETAILS = [
   ['Compatible Upgrade', 'Highest upgrade satisfying the existing version/compatibility policy, whether patched or not'],
   ['Latest Available', 'Newest published stable version, regardless of compatibility'],
   ['Is Optional Update', 'Yes when this is an optional non-vulnerable update rather than a vulnerability fix; blank otherwise'],
-  ['Verification Status', 'Resolver verification outcome; failure details are listed under the table'],
+  ['Verification Status', 'SUCCESS, FAILED (candidates conflicted) or NOT VERIFIED (no candidate or the runner could not verify, e.g. missing tool or timeout); details are listed under the table'],
 ];
 
 const cell = value => (value ? `\`${value}\`` : '—');
@@ -17,8 +17,8 @@ const escapeAttribute = text => String(text).replace(/&/g, '&amp;').replace(/"/g
 
 function verificationCell(target) {
   if (!target.verification_status) return '—';
-  if (target.verification_status !== 'FAILED' || !target.verification_notes) return target.verification_status;
-  return `<abbr title="${escapeAttribute(target.verification_notes)}">FAILED</abbr>`;
+  if (target.verification_status === 'SUCCESS' || !target.verification_notes) return target.verification_status;
+  return `<abbr title="${escapeAttribute(target.verification_notes)}">${target.verification_status}</abbr>`;
 }
 
 function row(target) {
@@ -28,13 +28,13 @@ function row(target) {
 }
 
 function failureNotes(targets) {
-  const failed = targets.filter(target => target.verification_status === 'FAILED');
+  const failed = targets.filter(target => ['FAILED', 'NOT VERIFIED'].includes(target.verification_status));
   if (failed.length === 0) return '';
   const lines = failed.map(target => {
     const notes = (target.verification_notes || '').split('\n').filter(Boolean).join('; ');
-    return `- \`${target.package}\`: ${notes || 'verification failed; no details were captured.'}`;
+    return `- \`${target.package}\` (${target.verification_status}): ${notes || 'no details were captured.'}`;
   });
-  return `**Verification failures**\n\n${lines.join('\n')}\n\n`;
+  return `**Verification notes**\n\n${lines.join('\n')}\n\n`;
 }
 
 function buildUpgradeOptionsSection(plans, bundleTargets) {

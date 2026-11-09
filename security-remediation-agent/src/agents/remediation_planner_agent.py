@@ -13,6 +13,8 @@ from ..tools.ecosystem_manifest_tool import ManifestTool
 logger = logging.getLogger(__name__)
 UPGRADE_ORDER = {"major": 0, "minor": 1, "patch": 2, "unknown": 3}
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+# Verification messages caused by the runner/environment rather than a real incompatibility.
+ENVIRONMENT_MESSAGES = ("Required command is unavailable", "Verification timed out", "Manifest unavailable")
 
 
 class RemediationPlannerAgent:
@@ -145,7 +147,7 @@ class RemediationPlannerAgent:
                 key = (package.ecosystem.lower(), manifest_path,
                        entry["package"].casefold(), bool(entry["minimum_fixed_version"]))
                 group = grouped.setdefault(key, {"entries": [], "affected_packages": set(), "is_update": False,
-                                                 "requires": False, "unverified": False, "notes": []})
+                                                 "requires": False, "unverified": False, "real_failure": False, "notes": []})
                 if entry not in group["entries"]:
                     group["entries"].append(entry)
                 group["affected_packages"].add(package.package)
@@ -156,9 +158,15 @@ class RemediationPlannerAgent:
                     group["requires"] = True
                     if not recommendation.verified_version:
                         group["unverified"] = True
-                        failures = [f"{c.version}: {c.verification_message}"
-                                    for c in recommendation.qualifying_upgrade_versions
-                                    if c.verification_status == "FAILED" and c.verification_message]
+                        by_message: dict[str, list[str]] = {}
+                        for c in recommendation.qualifying_upgrade_versions:
+                            if c.verification_status == "FAILED" and c.verification_message:
+                                by_message.setdefault(c.verification_message, []).append(c.version)
+                        if not by_message or not all(message.startswith(ENVIRONMENT_MESSAGES) for message in by_message):
+                            group["real_failure"] = True
+                        failures = [f"{versions[0]}: {message}" if len(versions) == 1
+                                    else f"{versions[0]} to {versions[-1]} ({len(versions)} versions): {message}"
+                                    for message, versions in by_message.items()]
                         for note in failures or ([package.notes] if package.notes else []):
                             if note not in group["notes"]:
                                 group["notes"].append(note)
@@ -169,7 +177,8 @@ class RemediationPlannerAgent:
             target = {key: value for key, value in entries[0].items() if key not in {"qualifying_versions", "review_status"}}
             target["is_update"] = group["is_update"]
             target["verification_status"] = (
-                None if not group["requires"] else "FAILED" if group["unverified"] else "SUCCESS")
+                None if not group["requires"] else "SUCCESS" if not group["unverified"]
+                else "FAILED" if group["real_failure"] else "NOT VERIFIED")
             target["verification_notes"] = "\n".join(group["notes"])
             target["affected_packages"] = sorted(group["affected_packages"])
             current_versions = sorted({entry["current_version"] for entry in entries if entry["current_version"]})
@@ -225,5 +234,8 @@ class RemediationPlannerAgent:
                 preferred = None
             chosen = preferred if preferred in allowed else next(iter(allowed), None)
             target["compatible_version"] = parsed[chosen] if chosen is not None else ""
+            if target["verification_status"] is None and chosen is None:
+                target["verification_status"] = "NOT VERIFIED"
+                target["verification_notes"] = target["verification_notes"] or "No compatible upgrade candidate was available to verify."
             targets.append(target)
         return targets

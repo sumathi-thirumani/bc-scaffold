@@ -68,10 +68,8 @@ test('current triage output produces verified parent criteria, unresolved tracki
   assert.match(body, /Upgrade `minimatch` from `3\.0\.4` to `3\.1\.2` \[compatible: `unknown`, highest fixed: `unknown`\]/);
   assert.match(body, /Upgrade `candidate` from `1\.0\.0` to `1\.1\.0` \[compatible: `1\.2\.0`, highest fixed: `2\.0\.0`\]/);
   assert.doesNotMatch(body, /Investigate remediation for `minimatch`/);
-  assert.match(body, /- \[ \] Review and validate an upgrade for `orval`; no fixed upgrade version has been identified\./);
-  assert.match(body, /Review and validate an upgrade for `unresolved`/);
+  assert.doesNotMatch(body, /Review and validate an upgrade/);
   assert.equal((body.match(/- \[ \] Upgrade `orval`/g) || []).length, 1);
-  assert.equal((body.match(/- \[ \] Review and validate an upgrade for `orval`/g) || []).length, 1);
   assert.match(body, /Upgrade `orval` from `7\.0\.0` to `7\.2\.0` \[compatible: `7\.2\.0`, highest fixed: `8\.0\.0`\]\.\n/);
   const acceptanceCriteria = body.split('## Acceptance Criteria\n')[1].split('\n## ')[0];
   assert.doesNotMatch(acceptanceCriteria, /to resolve/);

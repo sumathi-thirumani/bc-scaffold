@@ -6,13 +6,11 @@ const { compareVersions } = require('./versions');
 // Preferred path: the bundle's consolidated upgrade_targets.
 function targetCriteria(plans, bundleTargets) {
   const selectedPackages = new Set(plans.map(plan => plan.package.name.toLowerCase()));
-  const targets = bundleTargets.filter(target => (target.affected_packages || [])
+  const targets = bundleTargets.filter(target => target.minimum_fixed_version && (target.affected_packages || [])
     .some(name => selectedPackages.has(name.toLowerCase())));
   let section = '';
   for (const target of targets) {
-    section += target.minimum_fixed_version
-      ? `- [ ] Upgrade \`${target.package}\` from \`${target.current_version || 'unknown'}\` to \`${target.minimum_fixed_version}\` [compatible: \`${target.compatible_version || 'unknown'}\`, highest fixed: \`${target.highest_fixed_version || 'unknown'}\`].\n`
-      : `- [ ] Review and validate an upgrade for \`${target.package}\`; no fixed upgrade version has been identified.\n`;
+    section += `- [ ] Upgrade \`${target.package}\` from \`${target.current_version || 'unknown'}\` to \`${target.minimum_fixed_version}\` [compatible: \`${target.compatible_version || 'unknown'}\`, highest fixed: \`${target.highest_fixed_version || 'unknown'}\`].\n`;
   }
   return section + (targets.length ? '\n' : '_No upgrade targets identified in this bundle._\n\n');
 }
@@ -26,9 +24,8 @@ function planCriteria(vulnerablePlans) {
       for (const recommendation of recommendations) {
         const minimumFixedVersion = recommendation.minimum_patched_version
           || (recommendation.package === plan.package.name ? plan.package.minimum_fixed_version : '');
-        section += minimumFixedVersion
-          ? `- [ ] Upgrade \`${recommendation.package}\` from \`${recommendation.from_version || plan.package.current_version || 'unknown'}\` to \`${minimumFixedVersion}\` [compatible: \`${recommendation.compatible_version || 'unknown'}\`, highest fixed: \`${recommendation.highest_stable_version || 'unknown'}\`].\n`
-          : `- [ ] Review and validate an upgrade for \`${recommendation.package}\`.\n`;
+        if (!minimumFixedVersion) continue;
+        section += `- [ ] Upgrade \`${recommendation.package}\` from \`${recommendation.from_version || plan.package.current_version || 'unknown'}\` to \`${minimumFixedVersion}\` [compatible: \`${recommendation.compatible_version || 'unknown'}\`, highest fixed: \`${recommendation.highest_stable_version || 'unknown'}\`].\n`;
       }
       continue;
     }
@@ -36,10 +33,7 @@ function planCriteria(vulnerablePlans) {
       section += `- [ ] Upgrade \`${plan.package.name}\` from \`${plan.package.current_version || 'unknown'}\` to \`${plan.package.minimum_fixed_version}\` [compatible: \`unknown\`, highest fixed: \`unknown\`].\n`;
       continue;
     }
-    if (plan.fix.fix_class === 'NO_FIX_AVAILABLE') {
-      section += `- [ ] Investigate remediation for \`${plan.package.name}\`; no verified upgrade is available.\n`;
-      continue;
-    }
+    if (plan.fix.fix_class === 'NO_FIX_AVAILABLE') continue;
     const currentVersion = plan.package.current_version || 'unknown';
     const remediationVersion = plan.fix.upgrade_version || '—';
     const minimumVersion = plan.package.minimum_upgradable_version;
