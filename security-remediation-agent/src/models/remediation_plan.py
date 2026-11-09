@@ -24,6 +24,8 @@ class RemeditionPackageBundle:
     severity: str
     packages: list[SecurityPackageTriage] = field(default_factory=list)
     action_type: ActionType | None = None  # Normnalize action type from packages
+    # Consolidated per-package upgrade rows; a real field so the plan serializer exports it.
+    upgrade_targets: list[dict] = field(default_factory=list)
 
 
 @dataclass
