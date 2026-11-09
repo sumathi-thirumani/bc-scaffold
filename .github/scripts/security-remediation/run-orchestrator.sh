@@ -4,6 +4,7 @@ set -euo pipefail
 python ./bc-scaffold/security-remediation-agent/main.py \
 	--owner "${GITHUB_REPOSITORY_OWNER}" \
 	--repo "${GITHUB_REPOSITORY#*/}" \
+	--ref "${BASE_BRANCH:?Resolved base branch is required}" \
 	>orchestrator-output.json
 
 if [ ! -s orchestrator-output.json ]; then

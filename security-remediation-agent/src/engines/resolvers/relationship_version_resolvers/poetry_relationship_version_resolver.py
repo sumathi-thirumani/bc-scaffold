@@ -1,235 +1,317 @@
-"""Offline declared-dependency paths from Poetry files; Python 3.10+.
+"""Resolve Poetry dependency paths with ``poetry show <package> --tree --why``.
 
-Uses the tomli backport on Python 3.10. No subprocesses or network calls.
-Reports all declared groups/extras, NOT a resolved environment-specific graph.
-Conditional edges are retained. Duplicate locked names are rejected rather than
-guessing which version/marker/source applies. No files are modified.
+``--why`` only lists a package's immediate requirers, so full paths are built by
+walking upward, one Poetry call per ancestor, until a directly declared package is
+reached. Poetry runs through ``uv tool run poetry`` (or ``poetry`` on PATH) against
+a temporary copy of pyproject.toml and poetry.lock; nothing is installed or modified.
+Direct dependencies are read from pyproject.toml because ``--why`` does not report
+them when a package also has requirers.
 """
 
-import argparse
-import json
+from __future__ import annotations
+
+import importlib.util
+import logging
 import re
-from pathlib import Path
+import shutil
+import subprocess
 import sys
+import tempfile
 from collections import defaultdict
 from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
+
+from packaging.requirements import InvalidRequirement, Requirement
+
+from ....utils.subprocess_env import minimal_subprocess_env
 
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
+logger = logging.getLogger(__name__)
 
-def normalize(name):
+# Targets become argv, so only valid Python distribution names are allowed.
+_PACKAGE_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_HEADER = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*) (?P<version>\S+)(?:\s.*)?$")
+_CHILD = re.compile(r"^[|`]-- (?P<name>\S+)(?: (?P<constraint>.*))?$")
+_NOT_FOUND = re.compile(r"not found", re.IGNORECASE)
+MAX_PATHS_PER_TARGET = 200
+MAX_POETRY_CALLS = 200
+
+
+class _CallBudgetExceeded(Exception):
+    """The per-resolver cap on Poetry invocations was reached."""
+
+
+def normalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def read_toml(path):
-    with path.open("rb") as file:
-        return tomllib.load(file)
+def _declaration(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        extras = value.get("extras", [])
+        return {
+            "version": value.get("version", "*"),
+            "markers": value.get("markers") or value.get("marker"),
+            "extras": sorted(extras) if isinstance(extras, list) else [],
+        }
+    if isinstance(value, str):
+        return {"version": value, "markers": None, "extras": []}
+    raise ValueError(f"Unsupported dependency declaration: {value!r}")
 
 
-def direct_declarations(project):
-    roots = {}
+def direct_declarations(project: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Collect every declared dependency (all groups and extras) by normalized name."""
+    roots: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
-    def add(name, origin):
-        match = re.match(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)", name)
-        if not match:
-            raise ValueError(f"Unsupported dependency declaration: {name!r}")
-        roots.setdefault(normalize(match[1]), set()).add(origin)
+    def add_requirements(requirements: Iterable[Any], origin: str) -> None:
+        for requirement in requirements:
+            if not isinstance(requirement, str):
+                continue  # PEP 735 include-group entries; all groups are read anyway
+            try:
+                parsed = Requirement(requirement)
+            except InvalidRequirement as error:
+                logger.warning("Skipping requirement in %s: %s", origin, error)
+                continue
+            roots[normalize(parsed.name)].append({
+                "version": str(parsed.specifier) or "*",
+                "markers": str(parsed.marker) if parsed.marker else None,
+                "extras": sorted(parsed.extras),
+                "origin": origin,
+            })
 
     standard = project.get("project", {})
     if "dependencies" in standard.get("dynamic", []):
-        raise ValueError("Dynamic project dependencies cannot be read statically.")
-    for requirement in standard.get("dependencies", []):
-        add(requirement, "project.dependencies")
+        logger.warning("Dynamic project dependencies cannot be read statically")
+    add_requirements(standard.get("dependencies", []), "project.dependencies")
     for group, requirements in standard.get("optional-dependencies", {}).items():
-        for requirement in requirements:
-            add(requirement, f"project.optional-dependencies.{group}")
+        add_requirements(requirements, f"project.optional-dependencies.{group}")
 
     poetry = project.get("tool", {}).get("poetry", {})
-    sections = [("tool.poetry.dependencies", poetry.get("dependencies", {})),
-                ("tool.poetry.dev-dependencies", poetry.get("dev-dependencies", {}))]
+    sections = [
+        ("tool.poetry.dependencies", poetry.get("dependencies", {})),
+        ("tool.poetry.dev-dependencies", poetry.get("dev-dependencies", {})),
+    ]
     for group, data in poetry.get("group", {}).items():
         sections.append((f"tool.poetry.group.{group}", data.get("dependencies", {})))
-    for origin, requirements in sections:
-        for name in requirements:
-            if normalize(name) != "python":
-                add(name, origin)
+    for origin, dependencies in sections:
+        for name, value in dependencies.items():
+            if normalize(name) == "python":
+                continue
+            # Poetry allows a list of constraint tables for one dependency.
+            for item in value if isinstance(value, list) else [value]:
+                try:
+                    roots[normalize(name)].append({**_declaration(item), "origin": origin})
+                except ValueError as error:
+                    logger.warning("Skipping %s in %s: %s", name, origin, error)
 
-    # PEP 735 groups can contain include-group entries: all groups are inspected,
-    # so the included group's string dependencies are collected independently.
     for group, requirements in project.get("dependency-groups", {}).items():
-        for requirement in requirements:
-            if isinstance(requirement, str):
-                add(requirement, f"dependency-groups.{group}")
-    return roots
+        add_requirements(requirements, f"dependency-groups.{group}")
+    return dict(roots)
+
+
+def parse_why_output(output: str, target_key: str) -> list[tuple[str, str, str | None]]:
+    """Return ``(name, version, constraint)`` for each requirer in ``--tree --why`` output."""
+    parents: list[list[Any]] = []
+    for raw_line in output.splitlines():
+        line = raw_line.rstrip()
+        if not line or line.startswith("Package "):
+            continue
+        header = _HEADER.match(line)
+        if header:
+            parents.append([header["name"], header["version"], None])
+            continue
+        child = _CHILD.match(line)
+        if (
+            child
+            and parents
+            and parents[-1][2] is None
+            and normalize(child["name"]) == target_key
+        ):
+            parents[-1][2] = (child["constraint"] or "").strip() or "*"
+    return [(name, version, constraint) for name, version, constraint in parents]
 
 
 class PoetryRelationshipVersionResolver:
-    """Resolve Poetry relationships from raw ``pyproject.toml`` and lock text."""
+    """Identify direct/transitive Poetry dependencies using ``poetry show --tree --why``.
 
-    def __init__(self, lock_text: str, project_text: str, *, max_paths: int = 1000):
-        project = tomllib.loads(project_text)
-        lock = tomllib.loads(lock_text)
-        entries = lock.get("package")
-        if not isinstance(entries, list):
-            raise ValueError("Expected poetry.lock with [[package]] entries")
+    ``prefetch`` raises ``SubprocessError`` or ``OSError`` when Poetry itself fails.
+    A package absent from the lock is a normal empty result. Results are cached by
+    package name. Poetry reports one version per package, so a package locked at
+    several versions yields ``version=None``.
+    """
 
+    def __init__(
+        self,
+        lock_text: str,
+        project_text: str,
+        *,
+        poetry_command: list[str] | None = None,
+        timeout_seconds: int = 60,
+        max_paths: int = MAX_PATHS_PER_TARGET,
+        max_calls: int = MAX_POETRY_CALLS,
+    ) -> None:
+        if not lock_text or not project_text:
+            raise ValueError("pyproject.toml and poetry.lock content are required")
+        self.lock_text = lock_text
+        self.project_text = project_text
+        self.command = poetry_command or self._find_command()
+        self.timeout_seconds = timeout_seconds
         self.max_paths = max_paths
-        self.direct = set(direct_declarations(project))
-        self.packages: dict[str, dict] = {}
-        self.parents: dict[str, set[str]] = defaultdict(set)
-        for entry in entries:
+        self.max_calls = max_calls
+
+        self.declarations = direct_declarations(tomllib.loads(project_text))
+        self.direct = set(self.declarations)
+        self.locked: dict[str, list[str | None]] = defaultdict(list)
+        self.names: dict[str, str] = {}
+        for entry in tomllib.loads(lock_text).get("package", []):
             key = normalize(entry["name"])
-            if key in self.packages:
-                raise ValueError(
-                    f"Multiple lock entries for {key}; version/marker-aware resolution required."
-                )
-            self.packages[key] = entry
+            self.names[key] = entry["name"]
+            if entry.get("version") not in self.locked[key]:
+                self.locked[key].append(entry.get("version"))
 
-        for parent, entry in self.packages.items():
-            for dependency in entry.get("dependencies", {}):
-                child = normalize(dependency)
-                if child in self.packages:
-                    self.parents[child].add(parent)
+        self._requirers: dict[str, list[tuple[str, str, str | None]]] = {}
+        self._edges: dict[tuple[str, str], str | None] = {}
+        self._calls = 0
+        self._results: dict[str, dict[str, Any]] = {}
 
-        self._results: dict[str, dict] = {}
+    @staticmethod
+    def _find_command() -> list[str]:
+        uv = shutil.which("uv")
+        if uv:
+            return [uv, "tool", "run", "poetry"]
+        if importlib.util.find_spec("uv"):
+            return [sys.executable, "-m", "uv", "tool", "run", "poetry"]
+        poetry = shutil.which("poetry")
+        if poetry:
+            return [poetry]
+        raise OSError("neither uv nor poetry executable found")
 
-    def prefetch(self, names: Iterable[str]) -> None:
-        for name in dict.fromkeys(names):
-            key = normalize(name)
-            if key not in self._results:
-                self._results[key] = self._resolve(key, name)
-
-    def resolve(self, target: str) -> dict:
+    def resolve(self, target: str) -> dict[str, Any]:
         key = normalize(target)
         if key not in self._results:
-            self._results[key] = self._resolve(key, target)
-        return self._results[key]
+            self.prefetch([target])
+        return self._results.get(key) or {"package": target, "occurrences": []}
 
-    def _resolve(self, target_key: str, target: str) -> dict:
-        package = self.packages.get(target_key)
-        if package is None:
-            return {"package": target, "occurrences": []}
+    def prefetch(self, names: Iterable[str]) -> None:
+        targets = [
+            name for name in dict.fromkeys(names) if normalize(name) not in self._results
+        ]
+        if not targets:
+            return
+        with tempfile.TemporaryDirectory(prefix="poetry_relationship_") as tmp:
+            directory = Path(tmp)
+            (directory / "pyproject.toml").write_text(self.project_text, encoding="utf-8")
+            (directory / "poetry.lock").write_text(self.lock_text, encoding="utf-8")
+            for target in targets:
+                key = normalize(target)
+                if not _PACKAGE_NAME.match(target):
+                    logger.warning("Ignoring invalid package name %r", target)
+                    self._results[key] = {"package": target, "occurrences": []}
+                elif key not in self.locked:
+                    self._results[key] = {"package": target, "occurrences": []}
+                else:
+                    self._results[key] = self._build(directory, key)
 
+    def _run(self, directory: Path, name: str) -> str:
+        if self._calls >= self.max_calls:
+            raise _CallBudgetExceeded
+        self._calls += 1
+        result = subprocess.run(
+            [*self.command, "show", name, "--tree", "--why"],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=self.timeout_seconds,
+            env=minimal_subprocess_env({
+                "NO_COLOR": "1",
+                "POETRY_NO_INTERACTION": "1",
+                "POETRY_VIRTUALENVS_CREATE": "false",
+            }),
+        )
+        if result.returncode != 0:
+            if _NOT_FOUND.search(f"{result.stdout}\n{result.stderr}"):
+                return ""
+            raise subprocess.SubprocessError(
+                f"poetry show {name} --tree --why failed with exit code "
+                f"{result.returncode}: {result.stderr.strip()[:500]}"
+            )
+        return result.stdout
+
+    def _parents(self, directory: Path, key: str) -> list[tuple[str, str, str | None]]:
+        if key not in self._requirers:
+            parents = parse_why_output(self._run(directory, self.names.get(key, key)), key)
+            self._requirers[key] = parents
+            for name, version, constraint in parents:
+                parent_key = normalize(name)
+                self.names.setdefault(parent_key, name)
+                self.locked.setdefault(parent_key, [version])
+                self._edges[(parent_key, key)] = constraint
+        return self._requirers[key]
+
+    def _version(self, key: str) -> str | None:
+        versions = self.locked.get(key, [])
+        return versions[0] if len(versions) == 1 else None
+
+    def _node(self, key: str, constraint: str | None = None) -> dict[str, Any]:
+        node: dict[str, Any] = {"package": self.names.get(key, key), "version": self._version(key)}
+        if constraint is not None:
+            node["dependency_conditions"] = [{"version": constraint}]
+        return node
+
+    def _build(self, directory: Path, target_key: str) -> dict[str, Any]:
         paths: list[list[str]] = []
-        pending = [(target_key,)]
-        expansions = 0
-        while pending and len(paths) < self.max_paths and expansions < 100000:
+        truncated = False
+        pending: list[tuple[str, ...]] = [(target_key,)]
+        while pending:
             reverse_path = pending.pop()
-            expansions += 1
             current = reverse_path[-1]
-            if current in self.direct:
+            is_direct = current in self.direct
+            if is_direct:
                 paths.append(list(reversed(reverse_path)))
-            for parent in sorted(self.parents.get(current, ()), reverse=True):
-                if parent not in reverse_path:
-                    pending.append((*reverse_path, parent))
+                if len(paths) >= self.max_paths:
+                    truncated = bool(pending)
+                    break
+            # A direct ancestor ends its path; only the target also looks upward.
+            if is_direct and current != target_key:
+                continue
+            try:
+                parents = self._parents(directory, current)
+            except _CallBudgetExceeded:
+                logger.warning("Poetry call budget reached resolving %s", target_key)
+                truncated = True
+                continue
+            for name, _, _ in sorted(parents, key=lambda parent: parent[0], reverse=True):
+                parent_key = normalize(name)
+                if parent_key not in reverse_path:
+                    pending.append((*reverse_path, parent_key))
 
-        def details(name: str) -> dict[str, str]:
-            entry = self.packages[name]
-            return {"package": entry["name"], "version": entry["version"]}
-
+        path_details = []
+        for path in paths:
+            rendered = [self._node(path[0])]
+            for parent, child in zip(path, path[1:], strict=False):
+                rendered.append(self._node(child, self._edges.get((parent, child))))
+            path_details.append(rendered)
         introducers = {
-            path[0]: details(path[0])
-            for path in paths
+            path[0]: self._node(path[0]) for path in paths if path[0] != target_key
         }
-        return {
-            "package": package["name"],
-            "occurrences": [{
-                "package": package["name"],
-                "version": package["version"],
-                "introducers": [
-                    introducers[key] for key in sorted(introducers)
-                ],
-                "is_root": target_key in self.direct,
-                "paths": [[details(name) for name in path] for path in paths],
-                "resolution_scope": "all locked groups and platforms",
-            }],
+        target_name = self.names.get(target_key, target_key)
+        version = self._version(target_key)
+        occurrence = {
+            "package": target_name,
+            "version": version,
+            "introducers": [introducers[key] for key in sorted(introducers)],
+            "is_root": target_key in self.direct,
+            "paths": path_details,
+            "paths_truncated": truncated,
+            "declared_in": sorted({
+                declaration["origin"] for declaration in self.declarations.get(target_key, [])
+            }),
+            "resolution_scope": "poetry show --tree --why over poetry.lock; markers not evaluated",
         }
-
-
-def inspect(project_dir, target, max_paths=1000):
-    project = read_toml(project_dir / "pyproject.toml")
-    lock = read_toml(project_dir / "poetry.lock")
-    roots = direct_declarations(project)
-    packages = {}
-    for package in lock.get("package", []):
-        key = normalize(package["name"])
-        if key in packages:
-            raise ValueError(f"Multiple lock entries for {key}; version/marker-aware resolution required.")
-        packages[key] = package
-
-    parents = {}
-    missing = set()
-    for parent, package in packages.items():
-        for dependency in package.get("dependencies", {}):
-            child = normalize(dependency)
-            if child in packages:
-                parents.setdefault(child, set()).add(parent)
-            else:
-                missing.add(child)
-
-    key = normalize(target)
-    paths = []
-    pending = [(key,)] if key in packages else []
-    expansions = 0
-    truncated = False
-    while pending:
-        if len(paths) >= max_paths or expansions >= 100000:
-            truncated = True
-            break
-        reverse_path = pending.pop()
-        expansions += 1
-        current = reverse_path[-1]
-        if current in roots:
-            paths.append(list(reversed(reverse_path)))
-        # Continue beyond a direct node to retain alternate paths through roots.
-        for parent in sorted(parents.get(current, ()), reverse=True):
-            if parent not in reverse_path:
-                pending.append((*reverse_path, parent))
-
-    def details(name):
-        package = packages[name]
-        return {"package": package["name"], "version": package["version"]}
-
-    package = packages.get(key)
-    return {
-        "package": package["name"] if package else target,
-        "found": package is not None,
-        "version": package["version"] if package else None,
-        "direct": key in roots,
-        "declared_in": sorted(roots.get(key, ())),
-        "required_by": sorted(parents.get(key, ())),
-        "introducers": [details(root) for root in sorted({path[0] for path in paths})],
-        "paths": [[details(name) for name in path] for path in sorted(paths)],
-        "paths_truncated": truncated,
-        "dependency_declarations": package.get("dependencies", {}) if package else {},
-        "analysis": "Declared lock graph across all groups/extras; markers are not evaluated.",
-        "missing_locked_dependencies": sorted(missing),
-        "limitations": [
-            "Optional and conditional edges may be inactive in your environment.",
-            "Lockfile freshness is not validated against the manifest.",
-        ],
-    }
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("package", help="Target package, for example urllib3")
-    parser.add_argument("--project", type=Path, default=Path.cwd())
-    parser.add_argument("--max-paths", type=int, default=1000)
-    args = parser.parse_args()
-    if args.max_paths < 1:
-        parser.error("--max-paths must be positive")
-    try:
-        result = inspect(args.project, args.package, args.max_paths)
-    except (OSError, ValueError, KeyError) as error:
-        print(json.dumps({"error": str(error)}), file=sys.stderr)
-        return 1
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        return {"package": target_name, "version": version, "occurrences": [occurrence]}

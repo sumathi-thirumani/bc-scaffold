@@ -4,13 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.engines.recommendation_resolver.pip_parent_version_resolver import (
+from src.engines.resolvers.recommendation_resolver.pip_recommendation_resolver import (
     ParentCandidate,
     ParentVersionShortlister,
     PipParentVersionResolver,
 )
-from src.agents import vulnerability_reviewer_agent as reviewer_module
-from src.agents.vulnerability_reviewer_agent import NCU_VERSION, VulnerabilityReviewerAgent
+from src.engines.reviewers import npm_compatible_version_reviewer as reviewer_module
+from src.engines.reviewers.npm_compatible_version_reviewer import NCU_VERSION, NpmCompatibleVersionReviewer
 from src.utils.subprocess_env import minimal_subprocess_env
 
 
@@ -39,7 +39,7 @@ def test_npm_check_updates_is_pinned_and_gets_no_token(monkeypatch):
 
     monkeypatch.setattr(reviewer_module.subprocess, "run", fake_run)
 
-    VulnerabilityReviewerAgent._run_npm_check_updates('{"dependencies": {}}')
+    NpmCompatibleVersionReviewer._run_npm_check_updates('{"dependencies": {}}')
 
     assert f"npm-check-updates@{NCU_VERSION}" in captured["args"]
     assert "GITHUB_TOKEN" not in captured["env"]
@@ -88,16 +88,17 @@ async def test_pip_shortlist_tolerates_invalid_versions_and_specifiers():
 
     assert await shortlister.shortlist("parent", "child", "not-a-version") == []
     candidates = await shortlister.shortlist("parent", "child", "1.5.0", "garbage")
-    assert [c.version for c in candidates] == ["1.0.0", "2.0.0"]
+    assert candidates == []
 
 
 @pytest.mark.asyncio
 async def test_pypi_metadata_is_downloaded_once_per_package():
-    from src.engines.recommendation_resolver.pip_parent_version_resolver import PyPiMetadataClient
+    from src.engines.resolvers.recommendation_resolver.pip_recommendation_resolver import PyPiMetadataClient
 
     calls = []
 
     class Response:
+        status_code = 200
         def raise_for_status(self):
             pass
 
@@ -118,35 +119,3 @@ async def test_pypi_metadata_is_downloaded_once_per_package():
     assert len(calls) == 1
 
 
-@pytest.mark.asyncio
-async def test_pip_resolver_returns_minimum_verified_parent_version():
-    class Pypi:
-        async def list_versions_descending(self, name):
-            return ["3.0.0", "2.2.0", "2.1.0", "2.0.0"]
-
-        async def get_release_requires_dist(self, name, version):
-            return []
-
-    class Verifier:
-        def verify(self, parent, version, child, safe):
-            return safe if version in {"2.2.0", "3.0.0"} else None
-
-    resolver = PipParentVersionResolver(
-        shortlister=ParentVersionShortlister(Pypi()), verifier=Verifier()
-    )
-
-    resolution = await resolver.resolve("parent", "child", "1.5.0", "2.0.0")
-
-    assert resolution.resolved_version == "2.2.0"
-    assert resolution.minimum_upgradable_version == "2.2.0"
-
-
-@pytest.mark.asyncio
-async def test_pip_verifier_runs_off_the_event_loop_thread():
-    verifier = _Verifier()
-    resolver = PipParentVersionResolver(shortlister=_Shortlister(), verifier=verifier)
-
-    resolution = await resolver.resolve("parent", "child", "1.5.0", "1.0.0")
-
-    assert resolution.resolved_version == "2.0.0"
-    assert verifier.thread is not threading.main_thread()

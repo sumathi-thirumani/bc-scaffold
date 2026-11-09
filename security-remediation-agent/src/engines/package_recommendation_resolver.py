@@ -9,19 +9,29 @@ from ..models.gh.pull_request_metadata import PullRequestMetadata
 from ..models.security_package_triage import (
     PackageUpgradeRecommendation,
     SecurityPackageTriage,
+    TransistiveSourcePackage,
+)
+from .resolvers.recommendation_resolver.dotnet_recommendation_resolver import NuGetResolutionError
+from .resolvers.recommendation_resolver.npm_recommendation_resolver import (
+    NpmParentVersionResolver,
 )
 from .resolvers.recommendation_resolver.pip_recommendation_resolver import (
     PipParentVersionResolver,
 )
-from .resolvers.recommendation_resolver.npm_recommendation_resolver import (
-    NpmParentVersionResolver,
+from .resolvers.recommendation_resolver_factory import (
+    NuGetParentVersionResolver,
+    RecommendationResolverFactory,
 )
-from .resolvers.recommendation_resolver_factory import RecommendationResolverFactory
 
 logger = logging.getLogger(__name__)
 
 
 class PackageRecommendationResolver:
+    """Attach actionable direct or parent upgrade candidates to a triaged package.
+
+    Core idea: match direct findings to sufficient bot PRs; for transitive findings,
+    ask the ecosystem resolver which introducing parent releases avoid the affected
+    child versions. Preserve candidate evidence for later review and verification."""
     def __init__(
         self,
         resolver_factory: RecommendationResolverFactory | None = None,
@@ -70,7 +80,7 @@ class PackageRecommendationResolver:
                 triage.manifest_path,
                 ref=ref,
             )
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, NuGetResolutionError) as exc:
             logger.warning(
                 "Cannot load recommendation resolver for %s: %s",
                 triage.package,
@@ -93,8 +103,12 @@ class PackageRecommendationResolver:
                             paths.append(rendered)
         for (parent, current), introducer in parents.items():
             recommendation = await self._resolve_parent_recommendation(
-                triage, parent, current, version_resolver,
+                triage,
+                parent,
+                current,
+                version_resolver,
                 dependency_paths=paths_by_parent[(parent, current)],
+                introducer=introducer,
             )
             if recommendation is not None:
                 recommendations.append(recommendation)
@@ -139,11 +153,24 @@ class PackageRecommendationResolver:
         triage: SecurityPackageTriage,
         parent: str,
         current_parent_version: str,
-        version_resolver: NpmParentVersionResolver | PipParentVersionResolver,
+        version_resolver: (
+            NpmParentVersionResolver | PipParentVersionResolver | NuGetParentVersionResolver
+        ),
         *,
         dependency_paths: list[list[dict[str, str]]] | None = None,
+        introducer: TransistiveSourcePackage | None = None,
     ) -> PackageUpgradeRecommendation | None:
-        if isinstance(version_resolver, NpmParentVersionResolver):
+        if isinstance(version_resolver, NuGetParentVersionResolver):
+            resolution = await version_resolver.resolve(
+                parent,
+                triage.package,
+                triage.vulnerablility_fixed_version,
+                current_parent_version=current_parent_version,
+                dependency_paths=dependency_paths,
+                vulnerable_range=triage.vulnerablility_version_range,
+            )
+            source = resolution.source
+        elif isinstance(version_resolver, NpmParentVersionResolver):
             resolution = await version_resolver.resolve(
                 parent,
                 triage.package,
@@ -164,7 +191,20 @@ class PackageRecommendationResolver:
             )
             source = resolution.source
 
+        action = getattr(resolution, "action", "upgrade_parent")
+        if introducer is not None:
+            introducer.recommendation_action = action
+            introducer.recommended_version = resolution.resolved_version
+            introducer.requires_verification = getattr(resolution, "requires_verification", False)
         if not resolution.resolved or not resolution.resolved_version:
+            reason = getattr(resolution, "reason", "") or "No parent upgrade candidate was identified"
+            note = f"{parent} {current_parent_version or 'unknown'} ({action}): {reason}"
+            if note not in triage.notes.splitlines():
+                triage.notes = "\n".join(part for part in (triage.notes, note) if part)
+            logger.info(
+                "No upgrade recommended for %s %s (%s): %s",
+                parent, current_parent_version, action, reason,
+            )
             return None
         return PackageUpgradeRecommendation(
             package=parent,

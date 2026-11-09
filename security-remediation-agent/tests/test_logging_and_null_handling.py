@@ -3,7 +3,7 @@ import logging
 import pytest
 
 from src.models.gh.codescanning_alert import CodescanningAlert
-from src.tools.utils import version_bump_resolver
+from src.engines.resolvers.artifact_pr_resolver import pr_pattern_version_extractor as version_bump_resolver
 
 
 def test_codescanning_alert_handles_null_severity_and_rule_id():
@@ -58,10 +58,10 @@ async def test_pull_requests_tool_skips_prs_with_null_user(monkeypatch):
 
 
 def test_review_output_is_truncated_for_logging():
-    from src.agents.vulnerability_reviewer_agent import VulnerabilityReviewerAgent
+    from src.engines.reviewers.npm_compatible_version_reviewer import NpmCompatibleVersionReviewer
 
-    truncated = VulnerabilityReviewerAgent._truncate_output("x" * 5000, limit=100)
+    truncated = NpmCompatibleVersionReviewer._truncate_output("x" * 5000, limit=100)
 
     assert truncated.startswith("x" * 100)
     assert "4900 more characters" in truncated
-    assert VulnerabilityReviewerAgent._truncate_output("short", limit=100) == "short"
+    assert NpmCompatibleVersionReviewer._truncate_output("short", limit=100) == "short"

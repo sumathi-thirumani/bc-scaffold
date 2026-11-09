@@ -5,11 +5,13 @@ remain unverified against the repository dependency graph and target environment
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 import httpx
-from packaging.requirements import Requirement
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
@@ -18,6 +20,29 @@ from packaging.version import InvalidVersion, Version
 logger = logging.getLogger(__name__)
 
 PYPI_JSON_URL = "https://pypi.org/pypi/{name}/json"
+PYPI_RELEASE_JSON_URL = "https://pypi.org/pypi/{name}/{version}/json"
+MAX_CONCURRENT_REQUESTS = 10
+MAX_ATTEMPTS = 3
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+MAX_EXPANSIONS = 500
+MAX_DEPTH = 64
+# Markers are evaluated across these environments; a release must be safe in each.
+MARKER_ENVIRONMENTS = [
+    {
+        "python_version": f"3.{minor}",
+        "python_full_version": f"3.{minor}.0",
+        "sys_platform": sys_platform,
+        "platform_system": system,
+        "os_name": "nt" if sys_platform == "win32" else "posix",
+        "extra": "",
+    }
+    for minor in range(9, 14)
+    for sys_platform, system in (("linux", "Linux"), ("win32", "Windows"), ("darwin", "Darwin"))
+]
+
+
+class PyPiMetadataError(RuntimeError):
+    """PyPI metadata needed for a recommendation could not be loaded."""
 
 
 @dataclass
@@ -25,7 +50,6 @@ class ParentCandidate:
     """A parent version shortlisted as a potential fix for the child vulnerability."""
 
     version: str
-    child_specifier: str = ""
 
 
 @dataclass
@@ -39,6 +63,8 @@ class ParentResolution:
     qualifying_upgrade_versions: list[str] = field(default_factory=list)
     source: str = "pypi_metadata_inferred"
     requires_verification: bool = True
+    action: str = "upgrade_parent"
+    reason: str = ""
 
     @property
     def resolved(self) -> bool:
@@ -46,12 +72,14 @@ class ParentResolution:
 
 
 class PyPiMetadataClient:
-    """Thin wrapper around the PyPI JSON API used to cheaply inspect package metadata."""
+    """Thin wrapper around the PyPI JSON API with per-run caching and retries."""
 
-    def __init__(self, client: httpx.AsyncClient | None = None):
+    def __init__(self, client: httpx.AsyncClient | None = None, *, retry_delay: float = 0.5):
         self._client = client
         self._owns_client = client is None
-        self._metadata_cache: dict[str, dict] = {}
+        self._retry_delay = retry_delay
+        self._tasks: dict[str, asyncio.Task[dict]] = {}
+        self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
     async def __aenter__(self) -> "PyPiMetadataClient":
         if self._client is None:
@@ -61,41 +89,70 @@ class PyPiMetadataClient:
     async def __aexit__(self, *exc_info) -> None:
         if self._owns_client and self._client is not None:
             await self._client.aclose()
+            self._client = None
+
+    async def _get_json(self, url: str) -> dict:
+        """Share completed and pending requests; failures are never cached."""
+        task = self._tasks.get(url)
+        if task is None:
+            task = asyncio.ensure_future(self._fetch(url))
+            self._tasks[url] = task
+        try:
+            return await asyncio.shield(task)
+        except Exception:
+            if self._tasks.get(url) is task and task.done():
+                self._tasks.pop(url, None)
+            raise
+
+    async def _fetch(self, url: str) -> dict:
+        try:
+            for attempt in range(MAX_ATTEMPTS):
+                last = attempt == MAX_ATTEMPTS - 1
+                try:
+                    async with self._semaphore:
+                        if self._client is not None:
+                            response = await self._client.get(url)
+                        else:
+                            async with httpx.AsyncClient(timeout=30.0) as client:
+                                response = await client.get(url)
+                except httpx.TransportError:
+                    if last:
+                        raise
+                else:
+                    if response.status_code not in RETRYABLE_STATUS or last:
+                        break
+                await asyncio.sleep(self._retry_delay * 2 ** attempt)
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise PyPiMetadataError(f"PyPI lookup failed for {url}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise PyPiMetadataError(f"Unexpected PyPI metadata from {url}")
+        return data
 
     async def get_package_metadata(self, name: str) -> dict:
-        assert self._client is not None, "Use PyPiMetadataClient as an async context manager"
-        key = canonicalize_name(name)
-        if key not in self._metadata_cache:
-            response = await self._client.get(PYPI_JSON_URL.format(name=name))
-            response.raise_for_status()
-            self._metadata_cache[key] = response.json()
-        return self._metadata_cache[key]
+        return await self._get_json(PYPI_JSON_URL.format(name=quote(canonicalize_name(name), safe="")))
 
     async def get_release_requires_dist(self, name: str, version: str) -> list[str]:
-        """Return ``requires_dist`` for a specific release, falling back to per-release metadata."""
+        """Return ``requires_dist`` for a specific release."""
         metadata = await self.get_package_metadata(name)
-        info = metadata.get("info", {})
+        info = metadata.get("info") or {}
         if info.get("version") == version:
             return info.get("requires_dist") or []
-
-        releases = metadata.get("releases", {}).get(version)
-        if not releases:
-            raise ValueError(f"Missing PyPI release metadata: {name}=={version}")
-        # PyPI's releases listing does not include requires_dist; fetch the version-specific
-        # endpoint which does.
-        assert self._client is not None
-        response = await self._client.get(f"https://pypi.org/pypi/{name}/{version}/json")
-        response.raise_for_status()
-        return response.json().get("info", {}).get("requires_dist") or []
+        if not (metadata.get("releases") or {}).get(version):
+            raise PyPiMetadataError(f"Missing PyPI release metadata: {name}=={version}")
+        # The releases listing omits requires_dist; the version endpoint has it.
+        data = await self._get_json(PYPI_RELEASE_JSON_URL.format(
+            name=quote(canonicalize_name(name), safe=""), version=quote(version, safe=""),
+        ))
+        return (data.get("info") or {}).get("requires_dist") or []
 
     async def list_versions_descending(self, name: str) -> list[str]:
         metadata = await self.get_package_metadata(name)
-        releases = metadata.get("releases", {})
         versions = []
-        for version, files in releases.items():
-            if not files:
-                continue
-            if any(f.get("yanked") for f in files):
+        for version, files in (metadata.get("releases") or {}).items():
+            # A release is yanked only when every file is; unreleased ones have no files.
+            if not files or all(f.get("yanked") for f in files):
                 continue
             try:
                 versions.append((Version(version), version))
@@ -113,7 +170,7 @@ class ParentVersionShortlister:
         self.max_candidates = max_candidates
 
     async def shortlist(
-        self, parent: str, child: str, safe_child_version: str,
+        self, parent: str, child: str, safe_child_version: str | None,
         current_parent_version: str | None = None, *,
         dependency_paths: list[list[dict[str, str]]] | None = None,
         vulnerable_range: str | None = None,
@@ -121,15 +178,18 @@ class ParentVersionShortlister:
         """Return stable qualifying roots in ascending order, without installing.
 
         Each edge selects the latest stable release satisfying all declarations
-        for that dependency. Conditional edges are conservatively retained across
-        platforms/extras. Results are inference, not pip's full environment solve.
+        that apply together in a sampled environment (see MARKER_ENVIRONMENTS).
+        Extras are not installed. Results are inference, not pip's environment solve.
+        Raises PyPiMetadataError when metadata cannot be loaded.
         """
         parent = canonicalize_name(parent)
         child = canonicalize_name(child)
         try:
-            fixed = Version(safe_child_version)
+            fixed = Version(safe_child_version) if safe_child_version else None
             current = Version(current_parent_version) if current_parent_version else None
-        except InvalidVersion:
+        except (InvalidVersion, TypeError):
+            return []
+        if fixed is None and not vulnerable_range:
             return []
         if dependency_paths and any(
             len(path) < 2
@@ -138,43 +198,31 @@ class ParentVersionShortlister:
             for path in dependency_paths
         ):
             return []
-        # Restrict recommendation lookups to edges observed on vulnerable paths.
+        # Restrict lookups to edges observed on vulnerable paths.
         # With no path evidence, inspect only the direct parent -> child edge.
-        relevant_edges = {}
+        relevant_edges: dict[str, set[str]] = {}
         for path in dependency_paths or [[{"package": parent}, {"package": child}]]:
             for left, right in zip(path, path[1:]):
-                relevant_edges.setdefault(canonicalize_name(left["package"]), set()).add(canonicalize_name(right["package"]))
+                relevant_edges.setdefault(canonicalize_name(left["package"]), set()).add(
+                    canonicalize_name(right["package"])
+                )
 
-        versions_cache = {}
-        requirements_cache = {}
+        versions_cache: dict[str, list[tuple[Version, str]]] = {}
+        checked: set[tuple[str, str]] = set()
         expansions = 0
 
         async def versions(name):
             if name not in versions_cache:
-                try:
-                    raw_versions = await self.pypi.list_versions_descending(name)
-                    parsed_versions = []
-                    for raw in raw_versions:
-                        try:
-                            parsed = Version(raw)
-                        except InvalidVersion:
-                            continue
-                        if not parsed.is_prerelease and not parsed.is_devrelease:
-                            parsed_versions.append((parsed, raw))
-                    versions_cache[name] = sorted(parsed_versions, reverse=True)
-                except (httpx.HTTPError, ValueError):
-                    versions_cache[name] = []
+                parsed_versions = []
+                for raw in await self.pypi.list_versions_descending(name):
+                    try:
+                        parsed = Version(raw)
+                    except InvalidVersion:
+                        continue
+                    if not parsed.is_prerelease and not parsed.is_devrelease:
+                        parsed_versions.append((parsed, raw))
+                versions_cache[name] = parsed_versions
             return versions_cache[name]
-
-        async def requirements(name, version):
-            key = (name, version)
-            if key not in requirements_cache:
-                try:
-                    values = await self.pypi.get_release_requires_dist(name, version)
-                    requirements_cache[key] = [Requirement(value) for value in values]
-                except (httpx.HTTPError, ValueError):
-                    requirements_cache[key] = None
-            return requirements_cache[key]
 
         def safe_target(version):
             if vulnerable_range:
@@ -187,45 +235,81 @@ class ParentVersionShortlister:
                     return False
             return version >= fixed
 
+        def constraint_sets(declared, name):
+            """Distinct specifier sets per dependency across sampled environments."""
+            wanted = relevant_edges.get(name, set())
+            relevant = []
+            for value in declared:
+                try:
+                    requirement = Requirement(value)
+                except InvalidRequirement:
+                    return None
+                if canonicalize_name(requirement.name) in wanted:
+                    relevant.append(requirement)
+            result: dict[str, set[frozenset[str]]] = {}
+            for requirement in relevant:
+                if requirement.url:
+                    return None
+            for environment in MARKER_ENVIRONMENTS:
+                active: dict[str, set[str]] = {}
+                for requirement in relevant:
+                    if requirement.marker is None or requirement.marker.evaluate(environment):
+                        active.setdefault(canonicalize_name(requirement.name), set()).add(
+                            str(requirement.specifier)
+                        )
+                for dependency, specs in active.items():
+                    result.setdefault(dependency, set()).add(frozenset(specs))
+            return result
+
         async def safe(name, raw, ancestors):
+            """Return (is_safe, ancestor keys a success relied on through cycles)."""
             nonlocal expansions
             if name == child:
-                return safe_target(Version(raw))
+                return safe_target(Version(raw)), frozenset()
             key = (name, raw)
+            if key in checked:
+                return True, frozenset()
             if key in ancestors:
-                return True
+                return True, frozenset({key})  # Other edges are checked by the ancestor.
             expansions += 1
-            if expansions > 500 or len(ancestors) >= 64:
-                return False
-            declared = await requirements(name, raw)
-            if declared is None:
-                return False
-            grouped = {}
-            for requirement in declared:
-                if canonicalize_name(requirement.name) not in relevant_edges.get(name, set()):
-                    continue
-                if requirement.url:
-                    return False
-                # Retain marker-conditional dependencies rather than silently
-                # hiding a path active on a different platform or via extras.
-                grouped.setdefault(canonicalize_name(requirement.name), []).append(requirement.specifier)
-            for dependency, constraints in grouped.items():
-                options = [
-                    (parsed, version) for parsed, version in await versions(dependency)
-                    if all(spec.contains(parsed, prereleases=False) for spec in constraints)
-                ]
-                if not options:
-                    return False
-                if not await safe(dependency, options[0][1], ancestors | {key}):
-                    return False
-            return True
+            if expansions > MAX_EXPANSIONS or len(ancestors) >= MAX_DEPTH:
+                return False, frozenset()
+            declared = await self.pypi.get_release_requires_dist(name, raw)
+            grouped = constraint_sets(declared, name)
+            if grouped is None:
+                return False, frozenset()
+            cycles: frozenset = frozenset()
+            for dependency, spec_sets in grouped.items():
+                available = await versions(dependency)
+                for specs in spec_sets:
+                    try:
+                        parsed_specs = [SpecifierSet(spec) for spec in specs]
+                    except InvalidSpecifier:
+                        return False, frozenset()
+                    options = [
+                        (parsed, version) for parsed, version in available
+                        if all(spec.contains(parsed, prereleases=False) for spec in parsed_specs)
+                    ]
+                    if not options:
+                        return False, frozenset()
+                    ok, hit = await safe(dependency, options[0][1], ancestors | {key})
+                    if not ok:
+                        return False, frozenset()
+                    cycles |= hit
+            # Successes that relied on an outer ancestor must not be reused elsewhere.
+            if cycles <= {key}:
+                checked.add(key)
+            return True, cycles - {key}
+
+        names = set(relevant_edges) | {n for targets in relevant_edges.values() for n in targets}
+        await asyncio.gather(*(versions(name) for name in names))
 
         result = []
         for parsed, raw in reversed(await versions(parent)):
             if current is not None and parsed <= current:
                 continue
             expansions = 0
-            if await safe(parent, raw, set()):
+            if (await safe(parent, raw, frozenset()))[0]:
                 result.append(ParentCandidate(version=raw))
                 if self.max_candidates is not None and len(result) >= self.max_candidates:
                     break
@@ -240,58 +324,36 @@ class PipParentVersionResolver:
         shortlister: ParentVersionShortlister | None = None,
         pypi: PyPiMetadataClient | None = None,
     ):
-        self._pypi = pypi
-        self.shortlister = shortlister
+        self.shortlister = shortlister or ParentVersionShortlister(pypi or PyPiMetadataClient())
 
     async def resolve(
         self,
         parent: str,
         child: str,
-        safe_child_version: str,
+        safe_child_version: str | None,
         current_parent_version: str | None = None,
         *,
         dependency_paths: list[list[dict[str, str]]] | None = None,
         vulnerable_range: str | None = None,
     ) -> ParentResolution:
         """Return the lowest plausible stable upgrade, without installing it."""
-        if self.shortlister is not None:
+        result = ParentResolution(parent=parent, child=child)
+        try:
             candidates = await self.shortlister.shortlist(
                 parent, child, safe_child_version, current_parent_version,
                 dependency_paths=dependency_paths, vulnerable_range=vulnerable_range,
             )
-        elif self._pypi is not None:
-            candidates = await ParentVersionShortlister(self._pypi).shortlist(
-                parent, child, safe_child_version, current_parent_version,
-                dependency_paths=dependency_paths, vulnerable_range=vulnerable_range,
-            )
-        else:
-            async with PyPiMetadataClient() as pypi:
-                candidates = await ParentVersionShortlister(pypi).shortlist(
-                    parent, child, safe_child_version, current_parent_version,
-                    dependency_paths=dependency_paths, vulnerable_range=vulnerable_range,
-                )
-
-        versions = {}
-        try:
-            current = Version(current_parent_version) if current_parent_version else None
-        except InvalidVersion:
-            return ParentResolution(parent=parent, child=child)
-        for candidate in candidates:
-            try:
-                parsed = Version(candidate.version)
-            except InvalidVersion:
-                continue
-            if parsed.is_prerelease or parsed.is_devrelease:
-                continue
-            if current is not None and parsed <= current:
-                continue
-            versions.setdefault(parsed, candidate.version)
-        qualifying = [versions[version] for version in sorted(versions)]
-        minimum = qualifying[0] if qualifying else None
-        return ParentResolution(
-            parent=parent,
-            child=child,
-            resolved_version=minimum,
-            minimum_upgradable_version=minimum,
-            qualifying_upgrade_versions=qualifying,
-        )
+        except PyPiMetadataError as exc:
+            logger.warning("pip recommendation unverified for %s: %s", parent, exc)
+            result.action = "metadata_unavailable"
+            result.reason = f"Registry metadata could not be loaded: {exc}"
+            return result
+        qualifying = [candidate.version for candidate in candidates]
+        if not qualifying:
+            result.action = "manual_remediation"
+            result.reason = "No newer parent release with a safe registry dependency graph was found"
+            return result
+        result.qualifying_upgrade_versions = qualifying
+        result.minimum_upgradable_version = result.resolved_version = qualifying[0]
+        result.reason = "Registry dependency metadata avoids the affected child versions; outcome is unverified"
+        return result

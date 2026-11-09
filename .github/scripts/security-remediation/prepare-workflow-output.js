@@ -48,7 +48,6 @@ function adaptTriagePackage(pkg) {
   const recommendations = pkg.package_upgrade_recommendations || [];
   const ownRecommendation = recommendations.find(recommendation =>
     recommendation.package.toLowerCase() === pkg.package.toLowerCase()
-    && recommendation.verification_status === 'resolution_verified'
     && recommendation.verified_version);
   return {
     ...pkg,

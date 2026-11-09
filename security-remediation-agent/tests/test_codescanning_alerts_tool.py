@@ -1,7 +1,7 @@
 import pytest
 
-from src.tools.github_codescanning_collector import codescanning_alerts_tool as tool_module
-from src.tools.github_codescanning_collector.codescanning_alerts_tool import (
+from src.tools import codescanning_alerts_tool as tool_module
+from src.tools.codescanning_alerts_tool import (
     codescanning_alerts_tool,
     filter_codescanning_alerts,
     get_codescanning_alerts,
@@ -9,6 +9,7 @@ from src.tools.github_codescanning_collector.codescanning_alerts_tool import (
 
 
 class StubResponse:
+    status_code = 200
     def __init__(self, data, headers=None):
         self.data = data
         self.headers = headers or {}
@@ -152,7 +153,7 @@ async def test_codescanning_alerts_tool_invokes_fetcher(monkeypatch):
         {"owner": "octo-org", "repo": "octo-repo"}
     )
 
-    assert alerts == [
+    assert [a.model_dump() for a in alerts] == [
         {
             "number": 1,
             "url": "https://github.com/octo-org/octo-repo/security/code-scanning/1",
@@ -160,6 +161,7 @@ async def test_codescanning_alerts_tool_invokes_fetcher(monkeypatch):
             "severity": "high",
             "rule_id": "language-specific-package-vulnerability",
             "tool": "CodeQL",
-            "ecosystem": "requirements.txt",
+            "ecosystem": "",
+            "location_path": "requirements.txt",
         }
     ]

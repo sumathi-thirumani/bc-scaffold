@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 import httpx
 
-from ..models.security_remediation_context import SecurityRemediationCache
+from ..models.security_remediation_cache import SecurityRemediationCache
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +23,18 @@ API_VERSION = "2022-11-28"
 
 NPM_LOCKFILES = frozenset({"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml"})
 NUGET_LOCKFILES = frozenset({"packages.lock.json"})
-LOCKFILE_NAMES = NPM_LOCKFILES | NUGET_LOCKFILES | {"Pipfile.lock", "poetry.lock"}
+LOCKFILE_NAMES = NPM_LOCKFILES | NUGET_LOCKFILES | {"Pipfile.lock", "poetry.lock", "uv.lock"}
 NUGET_DECLARATION_SUFFIXES = frozenset({".csproj", ".fsproj", ".vbproj", ".props", ".targets"})
+PYTHON_MANIFEST_NAMES = frozenset({"Pipfile", "pyproject.toml"})
 NPM_ECOSYSTEMS = frozenset({"npm", "npm_and_yarn", "yarn"})
-PIP_ECOSYSTEMS = frozenset({"pip", "pypi", "python"})
+PIP_ECOSYSTEMS = frozenset({"pip", "pypi", "python", "uv"})
 POETRY_ECOSYSTEMS = frozenset({"poetry"})
 NUGET_ECOSYSTEMS = frozenset({"nuget"})
+RENOVATE_CONFIG_PATHS = (
+    "renovate.json5", ".github/renovate.json5", "renovate.json", ".github/renovate.json",
+    ".renovaterc", ".renovaterc.json", ".gitlab/renovate.json", ".gitlab/renovate.json5",
+)
+DEFAULT_REF = "HEAD"
 MAX_CONCURRENT_REQUESTS = 8
 MAX_ATTEMPTS = 3
 RETRY_BASE_DELAY = 1.0
@@ -60,10 +66,8 @@ class ManifestTool:
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
         self._sleep = asyncio.sleep
         self._locks: dict[tuple, list] = {}
-        self._refs: dict[tuple[str, str], str | None] = {}
-        self._ref_lock = asyncio.Lock()
         self._visible: dict[tuple[str, str], bool] = {}
-        self._trees: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+        self._trees: dict[tuple[str, str, str], tuple[str, ...]] = {}
         self._warned_no_token = False
         self._offline = False
 
@@ -85,6 +89,27 @@ class ManifestTool:
     def is_lockfile(path: str | None) -> bool:
         return bool(path) and PurePosixPath(path).name in LOCKFILE_NAMES
 
+    @staticmethod
+    def is_dependency_manifest(path: str) -> bool:
+        """Whether a repository path is a supported dependency manifest or lockfile."""
+        name = PurePosixPath(path).name
+        dependency_name = name.lstrip(".").lower()
+        suffix = PurePosixPath(path).suffix.lower()
+        return (
+            name == "package.json"
+            or name in LOCKFILE_NAMES
+            or name in PYTHON_MANIFEST_NAMES
+            or (
+                dependency_name.startswith(("requirements", "constraints"))
+                and suffix in {".in", ".txt"}
+            )
+            or name.lower() == "packages.config"
+            or name.lower() in {
+                "nuget.config", "global.json"
+            }
+            or suffix in NUGET_DECLARATION_SUFFIXES
+        )
+
     @classmethod
     def declaration_path(cls, ecosystem: str, manifest_path: str | None) -> str | None:
         """Map an alert path to its conventional declaration-file path."""
@@ -104,7 +129,7 @@ class ManifestTool:
                 return path.with_suffix(".in").as_posix()
             if name == "Pipfile.lock":
                 return path.with_name("Pipfile").as_posix()
-            if name == "poetry.lock":
+            if name in {"poetry.lock", "uv.lock"}:
                 return path.with_name("pyproject.toml").as_posix()
             return path.as_posix()
         if ecosystem in POETRY_ECOSYSTEMS:
@@ -132,6 +157,14 @@ class ManifestTool:
             if path.name in NPM_LOCKFILES:
                 return path.as_posix()
             return path.with_name("package-lock.json").as_posix()
+        if ecosystem in NUGET_ECOSYSTEMS:
+            if path.name.lower() in NUGET_LOCKFILES:
+                return path.as_posix()
+            if (
+                path.name.lower() == "packages.config"
+                or path.suffix.lower() in NUGET_DECLARATION_SUFFIXES
+            ):
+                return path.with_name("packages.lock.json").as_posix()
         return None
 
     @classmethod
@@ -141,7 +174,7 @@ class ManifestTool:
             else path.with_name("package-lock.json")
         return path.with_name("package.json").as_posix(), lock.as_posix()
 
-    UNPARSED_LOCKFILES = frozenset({"pnpm-lock.yaml", "Pipfile.lock"})
+    UNPARSED_LOCKFILES = frozenset({"pnpm-lock.yaml", "Pipfile.lock", "uv.lock"})
 
     @classmethod
     def relationship_resolver_kind(cls, ecosystem: str, lock_path: str | None) -> str | None:
@@ -153,6 +186,8 @@ class ManifestTool:
             return None
         if name == "poetry.lock" and ecosystem in PIP_ECOSYSTEMS | POETRY_ECOSYSTEMS:
             return "poetry"
+        if ecosystem in NUGET_ECOSYSTEMS and name.lower() in NUGET_LOCKFILES:
+            return "nuget"
         if name == "yarn.lock" and ecosystem in NPM_ECOSYSTEMS:
             return "yarn"
         if ecosystem in NPM_ECOSYSTEMS:
@@ -187,35 +222,6 @@ class ManifestTool:
             return name.casefold()
         return name.lower()
 
-    async def resolve_ref(self, owner: str, repo: str, ref: str | None = None) -> str | None:
-        if ref is not None:
-            return ref
-        repo_key = (owner.lower(), repo.lower())
-        if repo_key in self._refs:
-            return self._refs[repo_key]
-        if self._offline:
-            return None
-        async with self._ref_lock:
-            if repo_key in self._refs:
-                return self._refs[repo_key]
-            if not self._has_token():
-                return None
-            url = f"{GITHUB_API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/commits/HEAD"
-            sha: str | None = None
-            try:
-                response = await self._send(url, "application/vnd.github.sha")
-                response.raise_for_status()
-                sha = response.text.strip() or None
-            except (httpx.HTTPError, OSError) as exc:
-                logger.warning(
-                    "Could not pin HEAD for %s/%s; reading the default branch unpinned: %s",
-                    owner, repo, exc,
-                )
-            self._refs[repo_key] = sha
-            if sha:
-                self._visible[repo_key] = True
-            return sha
-
     @contextlib.asynccontextmanager
     async def _key_lock(self, key: tuple):
         entry = self._locks.setdefault(key, [asyncio.Lock(), 0])
@@ -237,12 +243,14 @@ class ManifestTool:
         *,
         refresh: bool = False,
     ) -> str | None:
-        """Return raw UTF-8 file content, using the run-scoped cache."""
-        if not self._has_token():
+        """Return raw UTF-8 file content, using the run-scoped cache.
+
+        Without a ref, GitHub serves the repository's default branch.
+        """
+        if not self._offline and not self._has_token():
             return None
-        ref = await self.resolve_ref(owner, repo, ref)
         cache = self._cache.manifest_lock_cache if self.is_lockfile(path) else self._cache.manifest_cache
-        key = cache.key(owner, repo, path, ref)
+        key = cache.key(owner, repo, path, ref or DEFAULT_REF)
         async with self._key_lock(("content", *key)):
             if refresh:
                 cache.discard(key)
@@ -254,23 +262,26 @@ class ManifestTool:
             text, cacheable = await self._fetch(owner, repo, path, ref)
             if cacheable:
                 cache.set(key, text)
+                logger.info("Cached repository file with key %s", key)
             return text
 
     async def repository_tree(self, owner: str, repo: str, ref: str | None = None) -> list[dict[str, str]]:
-        if not self._has_token():
-            raise ValueError("GITHUB_TOKEN is required to list the repository tree")
-        ref = await self.resolve_ref(owner, repo, ref)
+        """List blob paths; without a ref, the default branch (HEAD) is used."""
+        ref = ref or DEFAULT_REF
+        tree_key = (owner.lower(), repo.lower(), ref)
+        if tree_key not in self._trees:
+            if self._offline:
+                raise ValueError(f"Repository tree for {owner}/{repo}@{ref} is not cached (offline)")
+            if not self._has_token():
+                raise ValueError("GITHUB_TOKEN is required to list the repository tree")
+            async with self._key_lock(("tree", *tree_key)):
+                if tree_key not in self._trees:
+                    self._trees[tree_key] = await self._fetch_tree(owner, repo, ref)
+        return [{"path": path} for path in self._trees[tree_key]]
+
+    async def _fetch_tree(self, owner: str, repo: str, ref: str) -> tuple[str, ...]:
         base = f"{GITHUB_API}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
         try:
-            if ref is None:
-                response = await self._send(base, "application/vnd.github+json")
-                response.raise_for_status()
-                ref = response.json().get("default_branch")
-                if not ref:
-                    raise ValueError(f"Cannot determine default branch for {owner}/{repo}")
-            tree_key = (owner.lower(), repo.lower(), ref)
-            if tree_key in self._trees:
-                return self._trees[tree_key]
             response = await self._send(
                 f"{base}/git/trees/{quote(ref, safe='')}",
                 "application/vnd.github+json",
@@ -278,25 +289,23 @@ class ManifestTool:
             )
             response.raise_for_status()
             payload = response.json()
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, OSError) as exc:
             raise ValueError(f"Cannot list repository tree for {owner}/{repo}@{ref}: {exc}") from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("tree"), list):
             raise ValueError("Unexpected repository tree response")
         if payload.get("truncated"):
             raise ValueError(f"Repository tree for {owner}/{repo} is truncated; cannot list files safely")
-        entries = [
-            {"path": entry["path"]}
+        self._visible[(owner.lower(), repo.lower())] = True
+        return tuple(
+            entry["path"]
             for entry in payload["tree"]
             if isinstance(entry, dict) and entry.get("type") == "blob" and entry.get("path")
-        ]
-        self._trees[tree_key] = entries
-        return entries
+        )
 
     def clear_cache(self) -> None:
         self._cache.manifest_cache.clear()
         self._cache.manifest_lock_cache.clear()
         self._trees.clear()
-        self._refs.clear()
         self._visible.clear()
 
     def _has_token(self) -> bool:
@@ -318,8 +327,9 @@ class ManifestTool:
         if self._offline:
             raise OfflineCacheMiss(f"Offline ManifestTool refused network request: {url}")
         client = self._client or self._get_owned_client()
-        async with self._semaphore:
-            for attempt in range(1, MAX_ATTEMPTS + 1):
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            # Back off outside the semaphore so one throttled request doesn't stall the rest.
+            async with self._semaphore:
                 try:
                     response = await client.get(
                         url,
@@ -329,16 +339,15 @@ class ManifestTool:
                 except httpx.TransportError:
                     if attempt == MAX_ATTEMPTS:
                         raise
-                    await self._sleep(self._retry_delay(None, attempt))
-                    continue
-                if attempt == MAX_ATTEMPTS or not self._is_retryable(response):
-                    return response
-                await self._sleep(self._retry_delay(response, attempt))
+                    response = None
+            if response is not None and (attempt == MAX_ATTEMPTS or not self._is_retryable(response)):
+                return response
+            await self._sleep(self._retry_delay(response, attempt))
         raise RuntimeError("unreachable")
 
     def _get_owned_client(self) -> httpx.AsyncClient:
         if self._owned_client is None:
-            self._owned_client = httpx.AsyncClient(timeout=30)
+            self._owned_client = httpx.AsyncClient(timeout=30, follow_redirects=True)
         return self._owned_client
 
     async def aclose(self) -> None:

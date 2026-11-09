@@ -22,9 +22,24 @@ logger = logging.getLogger(__name__)
 
 
 class GitHubApiError(RuntimeError):
+    """Preserve GitHub request failure context and optional HTTP status for callers."""
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         self.status_code = status_code
         super().__init__(message)
+
+
+def _auth_hint(status_code: int) -> str:
+    if status_code == 401:
+        return (
+            ": GITHUB_TOKEN is invalid, expired or revoked. Set a valid token, for example "
+            "$env:GITHUB_TOKEN = (gh auth token)"
+        )
+    if status_code == 403:
+        return (
+            ": access denied or rate limited. Check the token's repo/security_events scopes, "
+            "SSO authorization and rate limits"
+        )
+    return ""
 
 
 def get_github_headers() -> dict[str, str]:
@@ -111,7 +126,8 @@ async def fetch_paginated_results(
                     page,
                 )
                 raise GitHubApiError(
-                    f"GitHub request for {resource} failed with HTTP {response.status_code}",
+                    f"GitHub request for {resource} failed with HTTP {response.status_code}"
+                    f"{_auth_hint(response.status_code)}",
                     status_code=response.status_code,
                 ) from exc
 

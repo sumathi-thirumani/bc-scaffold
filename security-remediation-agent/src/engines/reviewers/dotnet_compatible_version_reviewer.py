@@ -1,8 +1,9 @@
 """Review stable same-major NuGet candidates without modifying security fixes."""
 import logging
 
-from ...models.remediation_plan import RemediationPlan, RemediationReconcileInfo
+from ...models.remediation_plan import RemediationPlan
 from ...tools.ecosystem_manifest_tool import ManifestTool
+from .update_triage import add_update_triage
 from ..resolvers.recommendation_resolver.dotnet_recommendation_resolver import (
     DotNetRecommendationResolver,
     NuGetResolutionError,
@@ -13,11 +14,17 @@ NUGET_ECOSYSTEMS = frozenset({"nuget"})
 
 
 class DotNetCompatibleVersionReviewer:
-    def __init__(self, manifest_tool: ManifestTool, resolver=None) -> None:
+    """Enrich NuGet recommendations with stable same-major registry candidates.
+
+    Core idea: review each project once without replacing security-fix evidence;
+    optionally add non-vulnerable updates. Restore verification happens later."""
+    def __init__(self, manifest_tool: ManifestTool, resolver=None, additional_updates: bool = False) -> None:
         self.resolver = resolver or DotNetRecommendationResolver(manifest_tool=manifest_tool)
+        self.additional_updates = additional_updates
 
     async def review(self, remediation_plan: RemediationPlan, repo: dict[str, str], *,
                      ref: str | None = None) -> RemediationPlan:
+        """Find project candidates per manifest and preserve their distinction from restore verification."""
         owner = repo.get("owner")
         repository = repo.get("repo") or repo.get("name")
         nuget_manifest_paths = any(
@@ -49,12 +56,23 @@ class DotNetCompatibleVersionReviewer:
                     if triage.ecosystem.lower() == "nuget" and triage.manifest_path == manifest_path
                     for recommendation in triage.package_upgrade_recommendations
                 }
-                recommendations = await nuget_resolver.highest_minor_versions(
-                    owner, repository, project_path, ref=ref, package_names=package_names,
+                recommendations = await nuget_resolver.highest_same_major_versions(
+                    owner, repository, project_path, ref=ref,
+                    package_names=None if self.additional_updates else package_names,
                 )
                 self.populate_compatible_versions(
                     remediation_plan, recommendations, manifest_path,
                 )
+                if self.additional_updates:
+                    vulnerable = {name.casefold() for name in package_names}
+                    for key, version in sorted(recommendations.items()):
+                        name = key.removesuffix(":candidate")
+                        if key.endswith(":candidate") and name not in vulnerable:
+                            add_update_triage(
+                                remediation_plan,
+                                lambda t: t.ecosystem.lower() == "nuget" and t.manifest_path == manifest_path,
+                                name, recommendations.get(f"{name}:requested", ""), version,
+                            )
                 nuget_notes.append(
                     f"{manifest_path}: stable same-major candidates retrieved; "
                     "not security-verified or restore-tested"
@@ -83,3 +101,4 @@ class DotNetCompatibleVersionReviewer:
                     candidate = recommendations.get(f"{recommendation.package.casefold()}:candidate")
                     if candidate:
                         recommendation.compatible_version = candidate
+                        recommendation.compatible_review_status = "upgrade_found"

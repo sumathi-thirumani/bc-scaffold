@@ -1,9 +1,11 @@
 // Creates/updates GitHub tracking issues for security remediation plans.
-// PR creation is handled elsewhere (create-rollup-branches.sh); this script
-// only reads already-matched PR/issue references from workflow-plans.json
+// This script does not create PRs; it only reads already-matched PR/issue
+// references from workflow-plans.json
 // and builds one tracking issue per (ecosystem, upgrade-group) bucket.
+// Issue body sections live in ./issue-template (located via ISSUE_TEMPLATE_DIR).
 
 const fs = require('fs');
+const { buildIssueBody, getCategory, getImpact, isTransitivePlan } = require(process.env.ISSUE_TEMPLATE_DIR);
 const { owner, repo } = context.repo;
 core.info(`Operating on caller repository: ${owner}/${repo}`);
 
@@ -15,31 +17,11 @@ const remediationPlan = JSON.parse(fs.readFileSync('orchestrator-output.json', '
 const summary = remediationPlan.summary || {};
 const summaryContext = summary.context || summary;
 const BASE_BRANCH = process.env.BASE_BRANCH;
-const GITHUB_BODY_MAX = 65536;
-
-// ── Labels ───────────────────────────────────────────────────────────────────
-
-const IMP_LABEL = { 'non-breaking': 'Non-Breaking', breaking: 'Breaking' };
-const ACT_LABEL = { rollup: 'Rollup', standalone: 'Standalone', placeholder: 'Placeholder', 'open-issue': 'Open Issue' };
+const RUN_URL = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
 const SECURITY_REMEDIATION_LABEL = 'Security Remediation';
 
-const ACTION_TYPE_TO_SUFFIX = {
-  rollup_pr: 'rollup',
-  standalone_pr: 'standalone',
-  placeholder_pr: 'placeholder',
-  open_issue: 'open-issue',
-};
-
-// ── Plan helpers ─────────────────────────────────────────────────────────────
-
-function getImpact(plan) {
-  return plan.fix.fix_class === 'BREAKING_BUMP' ? 'breaking' : 'non-breaking';
-}
-
-function isTransitivePlan(plan) {
-  return (plan.package.relationship || '').toLowerCase() === 'transitive' || plan.package.is_transitive === true;
-}
+// ── Grouping helpers ─────────────────────────────────────────────────────────
 
 // Strips scope/subpath noise from a package name for grouping purposes.
 // e.g. "@vue/cli-service" -> "@vue", "some-pkg/sub" -> "some-pkg".
@@ -61,73 +43,21 @@ function getGroupingPackageName(plan) {
     .map(normalizeGroupingName).sort();
   if (introducerNames.length > 0) return introducerNames[0];
 
-  const sources = plan.package.transitive_source_packages || plan.package.transitive_source_package || [];
-  if (sources.length > 0) {
-    const names = sources
-      .map(s => (s.includes('@') && s.lastIndexOf('@') > 0 ? s.slice(0, s.lastIndexOf('@')) : s))
-      .map(normalizeGroupingName)
-      .sort();
-    return names[0];
-  }
-
   return normalizeGroupingName(plan.package.name);
-}
-
-function getActionSuffix(plan) {
-  return ACTION_TYPE_TO_SUFFIX[plan.action.action_type] || 'open-issue';
-}
-
-function getCategory(plan) {
-  return `${encodeURIComponent(plan.package.ecosystem || 'unknown')}--${getImpact(plan)}-${getActionSuffix(plan)}`;
-}
-
-
-function buildAlerts(plan) {
-  if (plan.package.vulnerabilities) return plan.package.vulnerabilities;
-  const mdSummaries = {};
-  const md = plan.action.placeholder_markdown || '';
-  for (const m of md.matchAll(/- \*\*(GHSA-[\w-]+)\*\* \(CVSS ([\d.]+)\) - (.+)/g)) {
-    mdSummaries[m[1]] = { cvss: parseFloat(m[2]), summary: m[3].trim() };
-  }
-  return plan.package.unique_ghsas.map(id => ({
-    ghsa_id: id,
-    cve_id: null,
-    summary: mdSummaries[id]?.summary || `Vulnerability in ${plan.package.name}`,
-    cvss: mdSummaries[id]?.cvss ?? null,
-    url: `https://github.com/advisories/${id}`,
-    vulnerable_range: plan.package.current_version_range,
-    first_patched: plan.fix.upgrade_version || '—',
-  }));
-}
-
-function vulnerabilityTableRows(alerts) {
-  return alerts.map(a => {
-    const id = a.ghsa_id || a.cve_id || '?';
-    const cvss = a.cvss != null ? String(a.cvss) : '—';
-    return `| [${id}](${a.url}) | ${a.summary || '—'} | ${cvss} | ${a.vulnerable_range || '—'} | ${a.first_patched || '—'} |`;
-  });
-}
-
-function transitiveChildrenOf(plan, allPlans) {
-  return allPlans.filter(p => {
-    if (!isTransitivePlan(p)) return false;
-    const sources = p.package.transitive_source_packages || p.package.transitive_source_package || [];
-    return sources.some(src => src.split('@')[0].toLowerCase() === plan.package.name.toLowerCase());
-  });
 }
 
 // ── GitHub helpers ───────────────────────────────────────────────────────────
 
 async function ensureSecurityRemediationLabel() {
   const name = SECURITY_REMEDIATION_LABEL;
-    try {
-      await github.rest.issues.getLabel({ owner, repo, name });
+  try {
+    await github.rest.issues.getLabel({ owner, repo, name });
   } catch (error) {
     if (error.status !== 404) throw error;
     await github.rest.issues.createLabel({
       owner, repo, name, color: 'e11d48', description: 'Security vulnerability remediation',
     });
-      core.info(`Created label: ${name}`);
+    core.info(`Created label: ${name}`);
   }
 }
 
@@ -135,411 +65,6 @@ async function findIssue(title) {
   const q = `repo:${owner}/${repo} is:issue is:open in:title "${title}"`;
   const res = await github.rest.search.issuesAndPullRequests({ q, per_page: 10 });
   return res.data.items.find(i => i.title === title) || null;
-}
-
-// ── Repository summary section ──────────────────────────────────────────────
-
-const SEVERITY_BUCKETS = ['Critical', 'High', 'Medium', 'Low'];
-
-// Same CVSS thresholds used by severityLabel(), applied per-alert so counts
-// bucket consistently with the per-package Severity column below.
-function severityBucketOf(alert) {
-  const severity = (alert.severity || '').toLowerCase();
-  const normalized = severity === 'moderate' ? 'medium' : severity;
-  const bucket = SEVERITY_BUCKETS.find(value => value.toLowerCase() === normalized);
-  if (bucket) return bucket;
-  const cvss = alert.cvss;
-  if (cvss == null) return null;
-  return cvss >= 9 ? 'Critical' : cvss >= 7 ? 'High' : cvss >= 4 ? 'Medium' : 'Low';
-}
-
-function severityCounts(plans) {
-  const counts = { Critical: 0, High: 0, Medium: 0, Low: 0 };
-  for (const plan of plans) {
-    for (const alert of buildAlerts(plan)) {
-      const bucket = severityBucketOf(alert);
-      if (bucket) counts[bucket] += 1;
-    }
-  }
-  return counts;
-}
-
-function repositorySummaryMarkdown(plans) {
-  const counts = severityCounts(plans);
-  return '<details>\n<summary>Summary</summary>\n\n' +
-    `| ${SEVERITY_BUCKETS.join(' | ')} |\n` +
-    `|${SEVERITY_BUCKETS.map(() => '---').join('|')}|\n` +
-    `| ${SEVERITY_BUCKETS.map(bucket => counts[bucket]).join(' | ')} |\n\n</details>\n\n`;
-}
-
-// ── Issue group summary section (per-package overview table) ───────────────
-
-function severityLabel(alerts) {
-  const severity = SEVERITY_BUCKETS.find(bucket => alerts.some(alert => severityBucketOf(alert) === bucket));
-  if (alerts.some(alert => alert.severity) && severity) return severity;
-  const cvssValues = alerts.map(a => a.cvss).filter(v => v != null);
-  if (cvssValues.length === 0) return '—';
-  const maxCvss = Math.max(...cvssValues);
-  const bucket = maxCvss >= 9 ? 'Critical' : maxCvss >= 7 ? 'High' : maxCvss >= 4 ? 'Medium' : 'Low';
-  return `${bucket} (${maxCvss})`;
-}
-
-// Parent (introducer) packages for a specific vulnerable package, scoped to
-// only the transitive_dependency_occurrences whose `package` matches it -
-// not every occurrence across the whole bundle/plan.
-function parentPackagesOf(plan, packageName) {
-  const occurrences = (plan.package.dependency_occurrences || []).filter(occ =>
-    !packageName || (occ.package || '').toLowerCase() === packageName.toLowerCase());
-  const introducerNames = [...new Set(occurrences.flatMap(occ => (occ.introducers || []).map(i => i.package)))];
-  const parents = introducerNames.length
-    ? introducerNames
-    : (plan.package.transitive_source_packages || plan.package.transitive_source_package || []);
-  return Array.isArray(parents) && parents.length ? parents.join(', ') : '—';
-}
-
-// The vulnerable package name(s) as reported by the underlying vulnerability
-// alerts, rather than the remediation/bundle package name (which for
-// transitive plans is the resolved upgrade target, not the vulnerable one).
-// Deduplicated case-insensitively since the same package can be reported
-// with inconsistent casing across alerts (e.g. "starlette" vs "Starlette").
-function vulnerablePackageNamesOf(plan, alerts) {
-  const seen = new Map();
-  for (const alert of alerts) {
-    if (!alert.package) continue;
-    const key = alert.package.toLowerCase();
-    if (!seen.has(key)) seen.set(key, alert.package);
-  }
-  const names = [...seen.values()];
-  return names.length ? names : [plan.package.name];
-}
-
-// Splits a plan's alerts by the vulnerable package they were reported
-// against, so each distinct vulnerable package gets its own summary row
-// instead of being merged into one comma-separated cell.
-function alertsByVulnerablePackage(plan, alerts) {
-  const names = vulnerablePackageNamesOf(plan, alerts);
-  if (names.length <= 1) return [[names[0], alerts]];
-  const byKey = new Map(names.map(name => [name.toLowerCase(), []]));
-  for (const alert of alerts) {
-    const key = (alert.package || '').toLowerCase();
-    (byKey.get(key) || byKey.get(names[0].toLowerCase())).push(alert);
-  }
-  return names.map(name => [name, byKey.get(name.toLowerCase())]);
-}
-
-function buildIssueGroupSummarySection(ecosystem, plans) {
-  const vulnerablePlans = plans.filter(plan => buildAlerts(plan).length > 0);
-  let section = `\n## Package Vulnerability Summary (${ecosystem})\n\n`;
-  section += `| Package | No. of Vulnerabilities | Severity | Direct/Transitive | Parent Packages |\n|---|---|---|---|---|\n`;
-
-  if (vulnerablePlans.length === 0) {
-    section += `| _No vulnerable packages in this group_ | | | | |\n\n`;
-    return section;
-  }
-
-  for (const plan of vulnerablePlans) {
-    const alerts = buildAlerts(plan);
-    const depType = isTransitivePlan(plan) ? 'Transitive' : 'Direct';
-    for (const [packageName, packageAlerts] of alertsByVulnerablePackage(plan, alerts)) {
-      section += `| \`${packageName}\` | ${packageAlerts.length} | ${severityLabel(packageAlerts)} | ${depType} | ${parentPackagesOf(plan, packageName)} |\n`;
-    }
-  }
-  return section + '\n';
-}
-
-// ── Acceptance criteria section (checkbox per bundle package) ───────────────
-
-function buildAcceptanceCriteriaSection(plans, bundleTargets) {
-  const vulnerablePlans = plans.filter(plan => buildAlerts(plan).length > 0);
-  let section = `## Acceptance Criteria\n\n`;
-
-  if (Array.isArray(bundleTargets)) {
-    const selectedPackages = new Set(plans.map(plan => plan.package.name.toLowerCase()));
-    const targets = bundleTargets.filter(target => (target.affected_packages || [])
-      .some(name => selectedPackages.has(name.toLowerCase())));
-    for (const target of targets) {
-      const children = (target.affected_packages || []).filter(name => name.toLowerCase() !== target.package.toLowerCase());
-      const scope = children.length ? ` to resolve ${children.map(name => `\`${name}\``).join(', ')}` : '';
-      section += target.minimum_fixed_version
-        ? `- [ ] Upgrade \`${target.package}\` from \`${target.current_version || 'unknown'}\` to \`${target.minimum_fixed_version}\` [compatible: \`${target.compatible_version || 'unknown'}\`, highest fixed: \`${target.highest_fixed_version || 'unknown'}\`]${scope}.\n`
-        : `- [ ] Review and validate an upgrade for \`${target.package}\`${scope}; no common fixed version is established.\n`;
-    }
-    return section + (targets.length ? '\n' : '_No upgrade targets identified in this bundle._\n\n');
-  }
-
-  if (vulnerablePlans.length === 0) {
-    section += `_No vulnerable packages in this group_\n\n`;
-    return section;
-  }
-
-  for (const plan of vulnerablePlans) {
-    const recommendations = plan.package.package_upgrade_recommendations || [];
-    if (recommendations.length > 0) {
-      for (const recommendation of recommendations) {
-        const minimumFixedVersion = recommendation.minimum_patched_version
-          || (recommendation.package === plan.package.name ? plan.package.minimum_fixed_version : '');
-        const scope = recommendation.package === plan.package.name ? '' : ` to resolve \`${plan.package.name}\``;
-        section += minimumFixedVersion
-          ? `- [ ] Upgrade \`${recommendation.package}\` from \`${recommendation.from_version || plan.package.current_version || 'unknown'}\` to \`${minimumFixedVersion}\` [compatible: \`${recommendation.compatible_version || 'unknown'}\`, highest fixed: \`${recommendation.highest_stable_version || 'unknown'}\`]${scope}.\n`
-          : `- [ ] Review and validate an upgrade for \`${recommendation.package}\`${scope} (${recommendation.verification_status || 'requires_validation'}).\n`;
-      }
-      continue;
-    }
-    if (plan.package.minimum_fixed_version) {
-      section += `- [ ] Upgrade \`${plan.package.name}\` from \`${plan.package.current_version || 'unknown'}\` to \`${plan.package.minimum_fixed_version}\` [compatible: \`unknown\`, highest fixed: \`unknown\`].\n`;
-      continue;
-    }
-    if (plan.fix.fix_class === 'NO_FIX_AVAILABLE') {
-      section += `- [ ] Investigate remediation for \`${plan.package.name}\`; no verified upgrade is available.\n`;
-      continue;
-    }
-    const currentVersion = plan.package.current_version || 'unknown';
-    const remediationVersion = plan.fix.upgrade_version || '—';
-    const minimumVersion = plan.package.minimum_upgradable_version;
-    const versionNoteLabel = minimumVersion
-      && remediationVersion !== '—'
-      && compareVersions(minimumVersion, remediationVersion) > 0
-      ? 'upgrade candidate'
-      : 'minimum version';
-    const minimumVersionNote = minimumVersion && minimumVersion !== remediationVersion
-      ? ` [${versionNoteLabel}: ${minimumVersion}]`
-      : '';
-    section += `- [ ] Upgrade \`${plan.package.name}\` from \`${currentVersion}\` to \`${remediationVersion}\`${minimumVersionNote}\n`;
-  }
-
-  function compareVersions(left, right) {
-    const parts = version => version.replace(/^[vV]/, '').split(/[.+-]/)
-      .map(part => /^\d+$/.test(part) ? Number(part) : part);
-    const leftParts = parts(left);
-    const rightParts = parts(right);
-    const length = Math.max(leftParts.length, rightParts.length);
-    for (let i = 0; i < length; i++) {
-      const a = leftParts[i] ?? 0;
-      const b = rightParts[i] ?? 0;
-      if (a === b) continue;
-      if (typeof a === 'number' && typeof b === 'number') return a - b;
-      return String(a).localeCompare(String(b));
-    }
-    return 0;
-  }
-  return section + '\n';
-}
-
-// ── Remediation pull requests overview table ────────────────────────────────
-
-function remediationStatusFor(act, cPlans, categoryPRs) {
-  if (act === 'open-issue') {
-    return { link: (categoryPRs || []).map(pr => `[#${pr.number}](${pr.url})`).join(', ') || '—',
-      status: 'Manual/agent review - issue tracking only' };
-  }
-  if (act === 'placeholder') {
-    if (categoryPRs && categoryPRs.length > 0) {
-      const uniq = [...new Map(categoryPRs.map(p => [p.number, p])).values()];
-      return { link: uniq.map(p => `[#${p.number}](${p.url})`).join(', '), status: 'Draft - awaiting agent/manual fix' };
-    }
-    return { link: '—', status: 'Stub branch creation failed' };
-  }
-  if (categoryPRs) {
-    if (Array.isArray(categoryPRs)) {
-      const links = [...new Map(categoryPRs.map(p => [p.number, p])).values()]
-        .map(p => `[#${p.number}](${p.url})`).join(', ');
-      return { link: links, status: 'Open' };
-    }
-    return { link: `[${categoryPRs.title}](${categoryPRs.url})`, status: 'Open' };
-  }
-  return { link: '—', status: 'No remediation PR matched' };
-}
-
-function buildRemediationPRsSection(ecosystem, categoryMap, groupPlansSet, groupPRs) {
-  const rows = [];
-  for (const imp of ['non-breaking', 'breaking']) {
-    for (const act of ['rollup', 'standalone', 'placeholder', 'open-issue']) {
-      const cat = `${encodeURIComponent(ecosystem)}--${imp}-${act}`;
-      const cPlans = (categoryMap[cat] || []).filter(plan => groupPlansSet.has(plan));
-      if (cPlans.length === 0) continue;
-      const { link, status } = remediationStatusFor(act, cPlans, groupPRs(cat));
-      const pkgList = cPlans.map(p => `\`${p.package.name}\``).join(', ');
-      rows.push(`| ${IMP_LABEL[imp]} | ${ACT_LABEL[act] || act} | ${pkgList} | ${link} | ${status} |`);
-    }
-  }
-
-  let section = `## Remediation Pull Requests\n\n`;
-  section += rows.length > 0
-    ? `| Impact | Action | Package | Pull Request | Status |\n|---|---|---|---|---|\n${rows.join('\n')}\n\n`
-    : '_No remediation PRs matched._\n\n';
-  return section;
-}
-
-function buildReconciliationNotesSection(ecosystem) {
-  if (!['npm', 'npm_and_yarn', 'yarn'].includes((ecosystem || '').toLowerCase())) {
-    return '';
-  }
-  const notes = (remediationPlan.reconciliation_info || [])
-    .filter(info => ['npm', 'npm_and_yarn', 'yarn']
-      .includes((info.ecosystem || '').toLowerCase()))
-    .map(info => (info.reconciliation_notes || '').trim())
-    .filter(Boolean);
-  if (notes.length === 0) return '';
-
-  const indentedNotes = notes.join('\n\n').split('\n')
-    .map(line => `    ${line}`)
-    .join('\n');
-  return `<details>\n<summary>Reconciliation Notes</summary>\n\n${indentedNotes}\n\n</details>\n\n`;
-}
-
-// ── Per-package detail sections ──────────────────────────────────────────────
-
-function planStatus(plan) {
-  if (plan.action.action_type === 'open_issue') return 'Manual/agent review - tracking issue opened';
-  if (plan.action.action_type === 'placeholder_pr') return 'Placeholder - awaiting agent/manual fix';
-  return plan.action.pr_number ? 'Remediation PR matched' : 'Awaiting remediation PR';
-}
-
-function buildTransitiveDetails(plan) {
-  let details = '';
-  const parentPRs = plan.package.introducer_pull_requests || [];
-  if (parentPRs.length) {
-    details += '\n**Introducer upgrade PRs** (verify the resulting transitive version):\n\n';
-    for (const candidate of parentPRs) {
-      details += `- [#${candidate.pr_number}](${candidate.pull_url}): ${candidate.package} ${candidate.from_version} → ${candidate.to_version}\n`;
-    }
-    details += '\n';
-  }
-  for (const occurrence of plan.package.dependency_occurrences || []) {
-    details += `\nTransitive dependency **${occurrence.package} ${occurrence.version || 'unknown'}** is introduced via\n\n`;
-    for (const parent of occurrence.introducers || []) {
-      details += `- ${parent.package} ${parent.version || 'unknown'} → ${occurrence.package} ${occurrence.version || 'unknown'}\n`;
-    }
-    if (!(occurrence.introducers || []).length) details += '_No declared parent found in the lockfile._\n';
-    details += '\n';
-  }
-  const transitiveOf = plan.package.transitive_source_packages || plan.package.transitive_source_package || [];
-  const srcList = Array.isArray(transitiveOf) ? transitiveOf.join(', ') : String(transitiveOf);
-  const mdNote = plan.action.placeholder_markdown || '';
-  const undershoot = mdNote.match(/Existing PR #(\d+) is insufficient[^)]*\(([^)]+)\)/);
-  if (undershoot) details += `- **Existing PR**: #${undershoot[1]} undershoots required version - [view](${undershoot[2]})\n`;
-  return details;
-}
-
-function buildDirectDetails(plan, transitiveChildren) {
-  let details = '';
-  if (transitiveChildren.length > 0) {
-    details += `- **Transitive Vulnerabilities Resolved**: ${transitiveChildren.map(t => `\`${t.package.name}\``).join(', ')}\n`;
-  }
-  return details;
-}
-
-function buildTransitiveChildrenSection(transitiveChildren) {
-  let section = `**Transitive Vulnerabilities Resolved by This Upgrade**:\n\n`;
-  for (const child of transitiveChildren) {
-    const childAlerts = buildAlerts(child);
-    const childSrc = (child.package.transitive_source_packages || child.package.transitive_source_package || []).join(', ');
-    section += `<details><summary><code>${child.package.name}</code> (transitive via <code>${childSrc}</code>)</summary>\n\n`;
-    if (childAlerts.length > 0) {
-      section += `| ID | Summary | CVSS | Affected Versions | Fixed In |\n|---|---|---|---|---|\n`;
-      section += vulnerabilityTableRows(childAlerts).join('\n') + '\n';
-    } else {
-      section += '_No individual vulnerability details available._\n';
-    }
-    section += `\n</details>\n\n`;
-  }
-  return section;
-}
-
-function buildPlanDetailSection(plan, allPlans) {
-  const alerts = buildAlerts(plan);
-  const isTransitive = isTransitivePlan(plan);
-  const transitiveChildren = transitiveChildrenOf(plan, allPlans);
-
-  let section = `### \`${plan.package.name}\`: \`${plan.package.current_version_range}\` -> \`${plan.fix.upgrade_version || plan.fix.non_breaking_fix || 'N/A'}\`\n\n`;
-  section += `- **Remediation Status**: ${planStatus(plan)}\n`;
-  section += isTransitive ? buildTransitiveDetails(plan) : buildDirectDetails(plan, transitiveChildren);
-
-  if (plan.action.pr_number) {
-    section += `- **Remediation PR**: #${plan.action.pr_number} ([view](${plan.action.pull_url}))\n`;
-  }
-  if (plan.state.issue_id) {
-    section += `- **Tracking Issue**: #${plan.state.issue_id} ([view](${plan.state.issue_url}))\n`;
-  }
-
-  if (alerts.length > 0) {
-    section += `**Vulnerabilities**:\n\n| ID | Summary | CVSS | Affected Versions | Fixed In |\n|---|---|---|---|---|\n`;
-    section += vulnerabilityTableRows(alerts).join('\n') + '\n\n';
-  }
-
-  if (!isTransitive && transitiveChildren.length > 0) {
-    section += buildTransitiveChildrenSection(transitiveChildren);
-  }
-
-  return section;
-}
-
-function buildCategoryDetailSections(ecosystem, categoryMap, groupPlansSet, groupPRs, allPlans) {
-  let body = '';
-  for (const imp of ['non-breaking', 'breaking']) {
-    for (const act of ['rollup', 'standalone', 'placeholder', 'open-issue']) {
-      const cat = `${encodeURIComponent(ecosystem)}--${imp}-${act}`;
-      const cPlans = (categoryMap[cat] || []).filter(plan => groupPlansSet.has(plan));
-      if (cPlans.length === 0) continue;
-
-      body += `## ${IMP_LABEL[imp]} - ${ACT_LABEL[act]} Updates\n\n`;
-
-      if (act === 'placeholder') {
-        const phPRs = groupPRs(cat) || [];
-        const uniqPRs = [...new Map(phPRs.map(p => [p.number, p])).values()];
-        if (uniqPRs.length > 0) {
-          body += `**Placeholder PR**: ${uniqPRs.map(p => `[#${p.number}](${p.url})`).join(', ')} _(draft - push fixes or assign to agent)_\n\n`;
-        }
-      }
-
-      for (const plan of cPlans) {
-        body += buildPlanDetailSection(plan, allPlans);
-      }
-    }
-  }
-  return body;
-}
-
-// ── Footer sections ──────────────────────────────────────────────────────────
-
-function mergeOrderSection() {
-  return `<details>\n<summary>Recommended Merge Order</summary>\n\n` +
-    `Validate updates before merging; merge non-breaking updates first, review breaking changes, and re-run this workflow after each merge.\n\n` +
-    `</details>\n\n`;
-}
-
-function footerSection() {
-  return `---\n_Generated by [Security Vulnerability Remediation](${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId})_`;
-}
-
-function truncateForGitHub(body) {
-  if (body.length <= GITHUB_BODY_MAX) return body;
-  const runLink = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-  const notice = `\n\n---\n> ⚠️ **Content truncated**: this tracking issue exceeded GitHub's ${GITHUB_BODY_MAX}-character body limit. ` +
-    `See the full details in the [workflow run](${runLink}) artifacts.\n`;
-  return body.slice(0, GITHUB_BODY_MAX - notice.length) + notice;
-}
-
-// ── Issue body assembly ──────────────────────────────────────────────────────
-
-function buildIssueBody(ecosystem, upgradeGroup, group, categoryMap, groupPRs) {
-  let body = `# [${ecosystem}] [${upgradeGroup}]\n\n`;
-  body += `**Base Branch**: \`${BASE_BRANCH}\`\n`;
-  body += `**Workflow Run**: [#${context.runId}](${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId})\n\n`;
-  body += repositorySummaryMarkdown(group.plans);
-  body += buildIssueGroupSummarySection(ecosystem, group.plans);
-  const sourceBundle = (remediationPlan.remediation_plan_bundles || []).find(bundle =>
-    bundle.ecosystem === ecosystem && bundle.groupName === upgradeGroup);
-  body += buildAcceptanceCriteriaSection(group.plans, sourceBundle?.upgrade_targets);
-
-  const groupPlansSet = new Set(group.plans);
-  body += buildRemediationPRsSection(ecosystem, categoryMap, groupPlansSet, groupPRs);
-  body += buildReconciliationNotesSection(ecosystem);
-  body += buildCategoryDetailSections(ecosystem, categoryMap, groupPlansSet, groupPRs, group.plans);
-  body += mergeOrderSection();
-  body += footerSection();
-
-  return truncateForGitHub(body);
 }
 
 // ── Grouping ─────────────────────────────────────────────────────────────────
@@ -610,7 +135,16 @@ async function createOrUpdateTrackingIssues() {
     const { ecosystem, upgradeGroup } = group;
     const title = `[Security Remediation] [${ecosystem}] [${upgradeGroup}]`;
     const groupPRs = makeGroupPRsResolver(group);
-    const body = buildIssueBody(ecosystem, upgradeGroup, group, categoryMap, groupPRs);
+    const body = buildIssueBody({
+      ecosystem,
+      upgradeGroup,
+      group,
+      categoryMap,
+      groupPRs,
+      baseBranch: BASE_BRANCH,
+      run: { id: context.runId, url: RUN_URL },
+      remediationPlan,
+    });
 
     const issueLabels = [SECURITY_REMEDIATION_LABEL];
 

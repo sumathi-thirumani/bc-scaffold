@@ -1,7 +1,7 @@
 import logging
 import re
 
-from ....models.gh.pull_request_metadata import VersionBump
+from ....models.gh.version_bump import VersionBump
 
 logger = logging.getLogger(__name__)
 

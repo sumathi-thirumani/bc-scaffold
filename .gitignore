@@ -59,3 +59,4 @@ orchestrator-output.json
 workflow-plans.json
 rollup-results.json
 rollup-output.json
+security-remediation-agent/renovate.json5

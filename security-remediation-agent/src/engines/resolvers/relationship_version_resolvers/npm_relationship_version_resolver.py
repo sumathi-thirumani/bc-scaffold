@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -15,9 +16,22 @@ from ....utils.subprocess_env import minimal_subprocess_env
 
 logger = logging.getLogger(__name__)
 
+# Targets are passed as argv (through npm.cmd on Windows), so only valid npm names are allowed.
+NPM_PACKAGE_NAME = re.compile(r"^(@[a-z0-9~][a-z0-9._~-]*/)?[a-z0-9~][a-z0-9._~-]*$", re.IGNORECASE)
+MAX_PATHS_PER_TARGET = 200
+
 
 class NpmRelationshipVersionResolver:
-    """Identify npm relationships using the full ``npm ls`` lockfile tree."""
+    """Resolve every target path by traversing npm's full dependency tree.
+
+    The resolver leverages ``npm ls <targets> --all
+    --package-lock-only --json`` to interpret the lockfile and return a tree
+    without installing packages or changing repository files.
+
+    ``prefetch`` should receive every target up front; ``resolve`` on an unseen
+    target runs npm once for it. ``prefetch`` raises ``SubprocessError`` or
+    ``OSError`` when npm cannot read the lockfile; nothing is cached in that case.
+    """
 
     def __init__(
         self,
@@ -44,20 +58,31 @@ class NpmRelationshipVersionResolver:
 
     def prefetch(self, names: Iterable[str]) -> None:
         targets = [name for name in dict.fromkeys(names) if name not in self._results]
-        if not targets:
+        valid = []
+        for name in targets:
+            if NPM_PACKAGE_NAME.match(name):
+                valid.append(name)
+            else:
+                logger.warning("Ignoring invalid npm package name %r", name)
+                self._results[name] = self._build_result(name, [])
+        if not valid:
             return
+        # Let npm interpret its lockfile, then walk the full tree to retain every dependency path.
         with tempfile.TemporaryDirectory(prefix="npm_relationship_") as tmp:
             directory = Path(tmp)
             (directory / "package.json").write_text(self.package_text, encoding="utf-8")
             (directory / "package-lock.json").write_text(self.lock_text, encoding="utf-8")
-            tree = self._run_npm_ls(directory, targets)
-            matches = self._collect(tree, set(targets))
-            for name in targets:
+            tree = self._run_npm_ls(directory, valid)
+            matches = self._collect(tree, set(valid))
+            for name in valid:
                 self._results[name] = self._build_result(name, matches.get(name, []))
 
     def _run_npm_ls(self, directory: Path, names: list[str]) -> dict[str, Any]:
         result = subprocess.run(
-            [self.npm, "ls", *names, "--all", "--package-lock-only", "--json"],
+            [
+                self.npm, "ls", *names, "--all", "--package-lock-only", "--json",
+                "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+            ],
             cwd=directory,
             capture_output=True,
             text=True,
@@ -74,8 +99,14 @@ class NpmRelationshipVersionResolver:
             ) from exc
         if not isinstance(tree, dict):
             raise subprocess.SubprocessError("npm ls returned unexpected JSON")
+        if tree.get("error"):
+            # An unreadable lockfile must not be cached as "package not present".
+            raise subprocess.SubprocessError(f"npm ls failed: {json.dumps(tree['error'])[:500]}")
         if result.returncode != 0:
-            logger.debug("npm ls exited %s: %s", result.returncode, result.stderr.strip()[:500])
+            logger.warning(
+                "npm ls exited %s (problems: %s): %s",
+                result.returncode, str(tree.get("problems", ""))[:300], result.stderr.strip()[:300],
+            )
         return tree
 
     def _collect(
@@ -84,16 +115,22 @@ class NpmRelationshipVersionResolver:
         targets: set[str],
     ) -> dict[str, list[list[tuple[str, str]]]]:
         matches: dict[str, list[list[tuple[str, str]]]] = {}
+        truncated: set[str] = set()
         stack: list[tuple[dict[str, Any], list[tuple[str, str]]]] = [(tree, [])]
         while stack:
             node, path = stack.pop()
             for key, child in (node.get("dependencies") or {}).items():
-                if not isinstance(child, dict):
+                if not isinstance(child, dict) or child.get("missing"):
                     continue
                 version = child.get("version") or ""
                 child_path = path + [(key, version)]
                 if key in targets:
-                    matches.setdefault(key, []).append(child_path)
+                    found = matches.setdefault(key, [])
+                    if len(found) < MAX_PATHS_PER_TARGET:
+                        found.append(child_path)
+                    elif key not in truncated:
+                        truncated.add(key)
+                        logger.warning("Truncating dependency paths for %s at %d", key, MAX_PATHS_PER_TARGET)
                 if (key, version) in path:
                     continue
                 stack.append((child, child_path))
@@ -111,7 +148,7 @@ class NpmRelationshipVersionResolver:
                 "package": target,
                 "version": version or None,
                 "introducers": [],
-                "is_root": len(path) == 1,
+                "is_root": False,
                 "paths": [],
             })
             occurrence["is_root"] = occurrence["is_root"] or len(path) == 1
@@ -124,6 +161,6 @@ class NpmRelationshipVersionResolver:
                 occurrence["paths"].append(rendered)
         return {
             "package": target,
-            "occurrences": [by_version[version] for version in sorted(by_version)],
+            "occurrences": list(by_version.values()),
         }
 

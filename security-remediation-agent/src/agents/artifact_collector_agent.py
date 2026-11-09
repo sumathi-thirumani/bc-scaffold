@@ -8,11 +8,11 @@ from ..models.gh.pull_request_metadata import PullRequestMetadata
 from ..models.repository_artifacts import RepositoryArtifacts
 from ..models.security_findings import SecurityFindings
 from ..models.security_remediation_context import (
-    SecurityRemediationCache,
     SecurityRemediationContext,
 )
-from ..tools.ecosystem_manifest_tool import ManifestTool
+from ..tools.ecosystem_manifest_tool import RENOVATE_CONFIG_PATHS, ManifestTool
 from ..tools.pull_requests_tool import pull_requests_tool
+from ..tools.repository_context_tool import get_repository_context
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class ArtifactCollectorAgent:
     def __init__(self, manifest_tool: ManifestTool | None = None) -> None:
         if manifest_tool is None:
             logger.debug("ArtifactCollectorAgent created its own ManifestTool; cache is not shared")
-            manifest_tool = ManifestTool(cache=SecurityRemediationCache())
+            manifest_tool = ManifestTool()
         self.manifest_tool = manifest_tool
 
     async def collect(
@@ -36,15 +36,22 @@ class ArtifactCollectorAgent:
         context: SecurityRemediationContext,
     ) -> RepositoryArtifacts:
         owner = repo["owner"] if isinstance(repo, dict) else repo.owner
-        name = repo["name"] if isinstance(repo, dict) else repo.name
+        name = (repo.get("name") or repo["repo"]) if isinstance(repo, dict) else repo.repo
 
-        # Pin the commit once; every downstream read uses this ref (None = unpinned run).
-        ref = await self._safe_resolve_ref(owner, name)
+        # Start each collection with a fresh cache and use the configured branch.
+        self.manifest_tool.clear_cache()
+        ref = repo.get("ref") if isinstance(repo, dict) else repo.ref
+        if not ref:
+            ref = (await get_repository_context(owner, name)).ref
         pull_requests, _ = await asyncio.gather(
             self._fetch_pull_requests(owner, name),
             self._safe_prefetch_manifests(owner, name, findings, ref),
         )
         context.total_reviewed_prs = len(pull_requests)
+
+        for pull in pull_requests:
+            logger.debug("Processing pull request: %s", pull.pr_number)
+            logger.debug("Pull request version bumps: %s", pull.version_bumps)
 
         return RepositoryArtifacts(
             owner=owner,
@@ -53,13 +60,6 @@ class ArtifactCollectorAgent:
             manifest_tool=self.manifest_tool,
             ref=ref,
         )
-
-    async def _safe_resolve_ref(self, owner: str, repo: str) -> str | None:
-        try:
-            return await self.manifest_tool.resolve_ref(owner, repo)
-        except Exception:
-            logger.warning("Could not pin HEAD for %s/%s; running unpinned", owner, repo, exc_info=True)
-            return None
 
     @staticmethod
     async def _fetch_pull_requests(owner: str, repo: str) -> list[PullRequestMetadata]:
@@ -86,7 +86,7 @@ class ArtifactCollectorAgent:
         Collection deliberately does not parse repository files. Cache-only downstream
         resolvers parse the raw content only when they need structured data.
         """
-        raw_paths: dict[str, None] = {}
+        raw_paths: dict[str, None] = dict.fromkeys(RENOVATE_CONFIG_PATHS)
         for alert in findings.dependabot_alerts:
             ecosystem = (alert.ecosystem or "").lower()
             if alert.manifest_path:
@@ -96,6 +96,21 @@ class ArtifactCollectorAgent:
                 raw_paths[declaration] = None
             for raw in self.manifest_tool.triage_paths(ecosystem, alert.manifest_path):
                 raw_paths[raw] = None
+
+        try:
+            tree = await self.manifest_tool.repository_tree(owner, repo, ref)
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "Could not list repository files for %s/%s; prefetching alert manifests only: %s",
+                owner,
+                repo,
+                exc,
+            )
+        else:
+            for entry in tree:
+                path = entry["path"]
+                if self.manifest_tool.is_dependency_manifest(path):
+                    raw_paths[path] = None
 
         results = await asyncio.gather(
             *(self.manifest_tool.get(owner, repo, path, ref) for path in raw_paths),

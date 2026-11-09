@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import re
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from langchain_core.tools import tool
@@ -26,6 +28,25 @@ from .utils.github_api import (
 GitHubObject = dict[str, Any]
 
 logger = logging.getLogger(__name__)
+
+
+_DEPENDENCY_BOT_LOGIN = re.compile(r"^(app/)?(dependabot|renovate)", re.IGNORECASE)
+
+
+def _is_bot(user: GitHubObject | None) -> bool:
+    """Only Dependabot and Renovate PRs are in scope; this mirrors the PR text parser's author rule."""
+    return bool(_DEPENDENCY_BOT_LOGIN.match(((user or {}).get("login") or "").strip()))
+
+
+def _needs_dependency_review(pattern_bumps: list[VersionBump], review_all: bool) -> bool:
+    """Review when requested, when nothing was parsed, or when a package has conflicting transitions."""
+    if review_all or not pattern_bumps:
+        return True
+    transitions: dict[str, set[tuple[str, str]]] = {}
+    for bump in pattern_bumps:
+        transitions.setdefault(bump.package.strip().casefold(), set()).add(
+            (bump.from_version.strip(), bump.to_version.strip()))
+    return any(len(values) != 1 for values in transitions.values())
 
 
 def _normalize_version_bumps(
@@ -68,7 +89,7 @@ class SecurityDependencyPullRequestInput(BaseModel):
 
 async def get_open_pull_requests(owner: str, repo: str) -> list[GitHubObject]:
     """Fetch all open pull requests from a GitHub repository."""
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+    url = f"https://api.github.com/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/pulls"
     params = {"state": "open", "per_page": PER_PAGE}
     return await fetch_paginated_results(
         url,
@@ -105,15 +126,13 @@ async def pull_requests_tool(
     metadata_list: list[PullRequestMetadata] = []
     missing_number = 0
     non_bot_author = 0
-    without_version_bumps = 0
     pending_reviews = []
     for pull_request in pull_requests:
         if not pull_request.get("number"):
             missing_number += 1
             continue
 
-        user_ = (pull_request.get("user") or {}).get("login") or ""
-        if "bot" not in user_.lower():
+        if not _is_bot(pull_request.get("user")):
             non_bot_author += 1
             continue
 
@@ -126,17 +145,11 @@ async def pull_requests_tool(
             pattern_bumps = metadata.version_bumps
             # One stable transition per package can be taken directly from bot text.
             # Conflicting transitions and unparsed group updates need API evidence.
-            grouped = {}
-            for bump in pattern_bumps:
-                grouped.setdefault(bump.package.strip().casefold(), set()).add(
-                    (bump.from_version.strip(), bump.to_version.strip()))
-            if enable_dependency_review and (review_all or not pattern_bumps or any(len(values) != 1 for values in grouped.values())):
+            if enable_dependency_review and _needs_dependency_review(pattern_bumps, review_all):
                 pending_reviews.append((pull_request, metadata))
             else:
                 metadata.version_bumps = _normalize_version_bumps(pattern_bumps, [])
             metadata_list.append(metadata)
-            if not metadata.version_bumps:
-                without_version_bumps += 1
             logger.debug(
                 "Accepted pull request #%s by %s with %d version bump(s)",
                 metadata.pr_number,
@@ -155,7 +168,7 @@ async def pull_requests_tool(
                             extract_version_changes, owner, repo, pr["number"],
                             pull_request=pr, client=client,
                         )
-                    except GitHubApiError as exc:
+                    except (GitHubApiError, httpx.HTTPError, OSError) as exc:
                         logger.warning("Dependency review failed for %s/%s#%s; retaining %d pattern bump(s): %s",
                                        owner, repo, metadata.pr_number, len(metadata.version_bumps), exc)
                         return

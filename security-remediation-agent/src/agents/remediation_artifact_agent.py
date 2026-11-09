@@ -7,11 +7,12 @@ import re
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from enum import Enum
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 
 from ..engines.remediation_grouping_engine import RemediationGroupingEngine
+from ..models.plan_export import export_plan
 from ..models.remediation_plan import RemediationPlan
 from ..tools.ecosystem_manifest_tool import ManifestTool
 
@@ -38,14 +39,20 @@ def to_jsonable(value):
     return value
 
 
-def write_json(path, value):
+def write_json(path, value, *, compact=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     # Serialize before touching an existing output file.
-    text = json.dumps(to_jsonable(value), indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    options = {"separators": (",", ":")} if compact else {"indent": 2}
+    text = json.dumps(to_jsonable(value), ensure_ascii=False, allow_nan=False, **options) + "\n"
     path.write_text(text, encoding="utf-8")
 
 
 class RemediationArtifactAgent:
+    """Export the plan and generate Renovate rules from verified recommendations.
+
+    Core idea: retain the complete diagnostic plan, then add exact-version rules only
+    for upgrades that passed resolution. Reuse the collected Renovate configuration
+    and replace only this generator's rules, preserving user-authored settings."""
     def __init__(self, manifest_tool: ManifestTool | None = None,
                  output_path: str | Path = "renovate.json5",
                  plan_output_path: str | Path = "remediation-plan.json") -> None:
@@ -58,15 +65,17 @@ class RemediationArtifactAgent:
     async def report(self, remediation_plan: RemediationPlan, repo: dict[str, str], *,
                      ref: str | None = None) -> Path:
         # Always retain the plan, including unresolved findings and empty runs.
-        write_json(self.plan_output_path, remediation_plan)
+        """Write the full diagnostic plan, then export exact verified-version rules using cached Renovate config."""
+        write_json(self.plan_output_path, export_plan(remediation_plan), compact=True)
         owner = repo.get("owner")
         repository = repo.get("repo") or repo.get("name")
         if not owner or not repository:
             raise ValueError("Repository owner and name are required for remediation artifacts")
         if self.manifest_tool is None:
-            self.manifest_tool = ManifestTool()
+            raise ValueError("A collected ManifestTool is required for remediation artifacts")
+        ref = ref if ref is not None else repo.get("ref")
         config = await RemediationGroupingEngine.fetch_renovate_config(
-            owner, repository, ref, manifest_tool=self.manifest_tool)
+            owner, repository, ref, manifest_tool=self.manifest_tool.offline())
         config = config if config is not None else {}
         rules = config.get("packageRules", [])
         if not isinstance(rules, list):
@@ -88,11 +97,9 @@ class RemediationArtifactAgent:
                 path = ManifestTool.declaration_path(triage.ecosystem, triage.manifest_path)
                 if not datasource or not path:
                     continue
-                if PurePosixPath(path).name == "uv.lock":
-                    path = PurePosixPath(path).with_name("pyproject.toml").as_posix()
                 for recommendation in triage.package_upgrade_recommendations:
                     version = recommendation.verified_version
-                    if not version or recommendation.verification_status != "resolution_verified":
+                    if not version:
                         continue
                     try:
                         Version(version)
@@ -100,9 +107,9 @@ class RemediationArtifactAgent:
                         logger.warning("Skipping invalid verified version for %s", recommendation.package)
                         continue
                     key = (datasource, path, recommendation.package)
-                    if key in selected and selected[key] != version:
-                        raise ValueError(f"Conflicting verified versions for {recommendation.package} in {path}")
-                    selected[key] = version
+                    # The highest verified version also satisfies the lower advisories.
+                    if key not in selected or Version(version) > Version(selected[key]):
+                        selected[key] = version
         return [{"description": GENERATED_DESCRIPTION, "matchDatasources": [datasource],
                  "matchFileNames": [path], "matchPackageNames": [name],
                  "allowedVersions": "/^" + re.escape(version) + "$/"}

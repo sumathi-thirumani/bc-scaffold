@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from ....models.gh.pull_request_metadata import VersionBump
+from ....models.gh.version_bump import VersionBump
 from ....tools.utils.github_api import (
     GITHUB_API_TIMEOUT,
     GitHubApiError,

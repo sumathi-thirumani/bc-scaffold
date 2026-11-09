@@ -5,6 +5,7 @@ from .gh.vulnerability_alert import VulnerabilityAlert
 
 @dataclass
 class SecurityFindings:
+    """Keep Dependabot and code-scanning results separate until triage combines their evidence."""
     dependabot_alerts: list[VulnerabilityAlert]
     codescanning_alerts: list[CodescanningAlert]
 

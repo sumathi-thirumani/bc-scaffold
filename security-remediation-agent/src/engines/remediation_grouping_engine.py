@@ -7,7 +7,7 @@ from typing import Any
 
 from ..models.remediation_plan import RemeditionPackageBundle
 from ..models.security_package_triage import SecurityPackageTriage
-from ..tools.ecosystem_manifest_tool import ManifestTool
+from ..tools.ecosystem_manifest_tool import DEFAULT_REF, RENOVATE_CONFIG_PATHS, ManifestTool
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,7 @@ class RemediationGroupingEngine:
         Each package's `package` name is checked against each rule's
         `matchPackageNames`. The first matching rule's `groupName` becomes the bundle
         name. Packages that don't match any rule fall back to a "default" group.
+        Each ecosystem gets a separate bundle even when group names are shared.
         """
         default_group_name = "default"
 
@@ -98,24 +99,25 @@ class RemediationGroupingEngine:
 
         rules = config.get("packageRules", []) if isinstance(config, dict) else []
 
-        grouped: dict[str, list[SecurityPackageTriage]] = {}
+        grouped: dict[tuple[str, str], list[SecurityPackageTriage]] = {}
         for package in packages:
             matched_group = default_group_name
             for rule in rules:
                 match_names = rule.get("matchPackageNames", [])
                 if package.package in match_names:
-                    matched_group = rule.get("groupName", default_group_name)
+                    matched_group = rule.get("groupName") or default_group_name
                     break
-            grouped.setdefault(matched_group, []).append(package)
+            ecosystem = (package.ecosystem or "unknown").lower()
+            grouped.setdefault((ecosystem, matched_group), []).append(package)
 
         return [
             RemeditionPackageBundle(
                 groupName=group_name,
-                ecosystem=group_packages[0].ecosystem or "unknown",
+                ecosystem=ecosystem,
                 severity=None,
                 packages=group_packages,
             )
-            for group_name, group_packages in grouped.items()
+            for (ecosystem, group_name), group_packages in grouped.items()
         ]
 
     @staticmethod
@@ -131,18 +133,13 @@ class RemediationGroupingEngine:
         if manifest_tool is None:
             logger.debug("fetch_renovate_config created its own ManifestTool; cache is not shared")
             manifest_tool = ManifestTool()
-        candidates = paths or [
-            "renovate.json5",
-            ".github/renovate.json5",
-            "renovate.json",
-            ".github/renovate.json",
-            ".renovaterc",
-            ".renovaterc.json",
-            ".gitlab/renovate.json",
-            ".gitlab/renovate.json5",
-        ]
+        candidates = paths or RENOVATE_CONFIG_PATHS
 
         for path in candidates:
+            if manifest_tool.is_offline:
+                cache = manifest_tool.cache.manifest_cache
+                if not cache.has(cache.key(owner, repo, path, ref or DEFAULT_REF)):
+                    raise ValueError(f"Renovate config was not collected: {path}")
             content = await manifest_tool.get(owner, repo, path, ref)
             if content is None:
                 continue

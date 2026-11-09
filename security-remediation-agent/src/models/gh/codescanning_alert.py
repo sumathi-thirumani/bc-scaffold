@@ -6,6 +6,7 @@ UNKNOWN_SEVERITY = "unknown"
 
 
 class CodescanningAlert(BaseModel):
+    """Normalize a code-scanning finding while preserving rule and source-location evidence."""
     number: int | None = None
     url: str = ""
     summary: str = ""
