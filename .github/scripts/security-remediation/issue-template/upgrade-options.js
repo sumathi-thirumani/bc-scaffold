@@ -1,9 +1,8 @@
-// Upgrade options table for direct dependencies, with collapsed column definitions.
+// Upgrade options table for packages needing an upgrade, with collapsed column definitions.
 
-const { isTransitivePlan } = require('./plan-helpers');
 
 const COLUMN_DETAILS = [
-  ['Package', 'Direct dependency requiring remediation'],
+  ['Package', 'Package requiring an upgrade (a direct dependency, or the parent of a vulnerable transitive dependency)'],
   ['Current', 'Currently declared or resolved version'],
   ['Minimum Fix', 'Lowest candidate expected to address the vulnerability'],
   ['Compatible Upgrade', 'Highest upgrade satisfying the existing version/compatibility policy, whether patched or not'],
@@ -30,16 +29,17 @@ function row(target) {
 
 function buildUpgradeOptionsSection(plans, bundleTargets) {
   if (!Array.isArray(bundleTargets)) return '';
-  const directPackages = new Set(plans.filter(plan => !isTransitivePlan(plan))
-    .map(plan => plan.package.name.toLowerCase()));
-  const targets = bundleTargets.filter(target => directPackages.has((target.package || '').toLowerCase()));
+  const selectedPackages = new Set(plans.map(plan => plan.package.name.toLowerCase()));
+  // Same selection as the acceptance criteria, so parent upgrades for transitive findings are included.
+  const targets = bundleTargets.filter(target => (target.affected_packages || [])
+    .some(name => selectedPackages.has(name.toLowerCase())));
   if (targets.length === 0) return '';
 
   return '<details>\n<summary>Dependency Compatibility Analysis</summary>\n\n' +
-    'The following upgrade options are identified for each affected direct dependency. ' +
+    'The following upgrade options are identified for each package that needs an upgrade (direct dependencies and parents of transitive ones). ' +
     'Recommendations prioritize the minimum version that resolves the identified vulnerabilities and passes dependency compatibility validation.\n\n' +
-    '| Package | Current | Minimum Fix | Minimum Compatible Fix | Latest Compatible Fix | Compatible Upgrade | Latest Available | Is Update | Verification Status |\n' +
-    '|---|---|---|---|---|---|---|---|---|\n' +
+    '| Package | Current | Minimum Fix | Compatible Upgrade | Latest Available | Is Update | Verification Status |\n' +
+    '|---|---|---|---|---|---|---|\n' +
     `${targets.map(row).join('\n')}\n\n` +
     '| Column | Meaning |\n|---|---|\n' +
     `${COLUMN_DETAILS.map(([name, meaning]) => `| ${name} | ${meaning} |`).join('\n')}\n\n</details>\n\n`;

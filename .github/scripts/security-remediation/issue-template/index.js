@@ -23,9 +23,9 @@ function buildIssueBody({
   body += `**Workflow Run**: [#${run.id}](${run.url})\n\n`;
   body += repositorySummaryMarkdown(group.plans);
   body += buildPackageSummarySection(ecosystem, group.plans);
+  body += buildUpgradeOptionsSection(group.plans, sourceBundle?.upgrade_targets);
   body += buildAcceptanceCriteriaSection(group.plans, sourceBundle?.upgrade_targets);
   body += buildRemediationPRsSection(ecosystem, categoryMap, groupPlansSet, groupPRs);
-  body += buildUpgradeOptionsSection(group.plans, sourceBundle?.upgrade_targets);
   body += buildReconciliationNotesSection(ecosystem, remediationPlan.reconciliation_info);
   body += buildCategoryDetailSections(ecosystem, categoryMap, groupPlansSet, groupPRs);
   body += mergeOrderSection();
