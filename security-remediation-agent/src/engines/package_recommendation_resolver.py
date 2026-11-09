@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
 
 from packaging.version import InvalidVersion, Version
 
@@ -50,8 +51,7 @@ class PackageRecommendationResolver:
         """Populate direct PR or transitive parent upgrade recommendations."""
         if not triage.istransitive:
             self._populate_direct_recommendations(triage, pull_requests_by_package)
-            if not triage.package_upgrade_recommendations:
-                await self._populate_registry_recommendation(triage)
+            await self._populate_registry_recommendation(triage)
             return
 
         try:
@@ -150,7 +150,21 @@ class PackageRecommendationResolver:
                     candidates.append(raw)
             except InvalidVersion:
                 continue
-        if candidates:
+        if not candidates:
+            return
+        if triage.package_upgrade_recommendations:
+            # A bot PR proposes a single version; widen it with registry candidates so a
+            # same-major compatible version can be chosen and verified.
+            triage.package_upgrade_recommendations = [
+                replace(
+                    recommendation,
+                    qualifying_upgrade_versions=[
+                        *(c.version for c in recommendation.qualifying_upgrade_versions), *candidates],
+                    requires_verification=True,
+                )
+                for recommendation in triage.package_upgrade_recommendations
+            ]
+        else:
             triage.package_upgrade_recommendations = [PackageUpgradeRecommendation(
                 package=triage.package, from_version=triage.current_version,
                 qualifying_upgrade_versions=candidates, requires_verification=True, source="registry",
