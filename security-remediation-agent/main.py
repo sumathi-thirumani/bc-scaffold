@@ -101,12 +101,18 @@ async def async_main() -> None:
 
     # One ManifestTool (and cache) shared by every stage of the run.
     manifest_tool = ManifestTool(cache=SecurityRemediationCache())
+    grouping_agent = None
+    if config.llm_enabled:
+        try:
+            grouping_agent = GroupingRecommendationAgent()
+        except RuntimeError as exc:
+            logging.getLogger(__name__).warning("LLM grouping unavailable; using default grouping: %s", exc)
     orchestrator = SecurityOrchestrator(
         VulnerabilityCollectorAgent(),
         VulnerabilityTriageAgent(manifest_tool=manifest_tool),
         RemediationPlannerAgent(
             manifest_tool=manifest_tool,
-            grouping_recommendation_agent=GroupingRecommendationAgent() if config.llm_enabled else None,
+            grouping_recommendation_agent=grouping_agent,
         ),
         artifactCollectorAgent=ArtifactCollectorAgent(manifest_tool=manifest_tool),
         ecosystems=config.ecosystems,
