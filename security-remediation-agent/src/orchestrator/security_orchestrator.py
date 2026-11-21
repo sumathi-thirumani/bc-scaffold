@@ -1,5 +1,6 @@
 import logging
 
+from ..agents.llm.grouping_recommendation_agent import GroupingRecommendationAgent
 from ..agents.remediation_artifact_agent import RemediationArtifactAgent
 from ..agents.remediation_verification_agent import RemediationVerificationAgent
 from ..agents.artifact_collector_agent import ArtifactCollectorAgent
@@ -33,12 +34,15 @@ class SecurityOrchestrator:
         verification_enabled: bool = True,
         additional_updates: bool = False,
         artifact_output: bool = True,
+        groupingRecommendationAgent=None,
     ) -> None:
         self.ecosystems = frozenset(e.lower() for e in ecosystems) if ecosystems else None
         self.verification_enabled = verification_enabled
         self.vulnerability_collector = vulnerabilityCollectorAgent
         self.triager = vulnerabilityTriageAgent
         self.remediation_planner = remediationPlanningAgent
+        self.grouping_recommender = groupingRecommendationAgent
+        
         # Share one ManifestTool per run: prefer the triager's so the collector's
         # prefetch warms the cache the resolvers read from.
         self.artifact_collector = artifactCollectorAgent or ArtifactCollectorAgent(
@@ -108,9 +112,7 @@ class SecurityOrchestrator:
             remediation_plan = await self._verify(remediation_plan, repo, artifacts.ref)
         else:
             logger.info("Remediation verification disabled by configuration")
-        populate_targets = getattr(self.remediation_planner, "populate_upgrade_targets", None)
-        if callable(populate_targets):
-            populate_targets(remediation_plan)
+        self.remediation_planner.populate_upgrade_targets(remediation_plan)
         await self._report(remediation_plan, repo, artifacts.ref)
         for bundle in remediation_plan.remediation_plan_bundles:
             logger.info("Remediation bundle: %s--%s", bundle.ecosystem, bundle.groupName)

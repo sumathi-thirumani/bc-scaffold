@@ -43,7 +43,7 @@ def test_review_precedes_planning_and_preserves_added_updates():
         events.append('report')
 
     orchestrator.reviewer = NS(review=review)
-    orchestrator.remediation_planner = NS(plan=plan)
+    orchestrator.remediation_planner = NS(plan=plan, populate_upgrade_targets=lambda plan: None)
     orchestrator._verify = verify
     orchestrator._report = report
     asyncio.run(orchestrator.run({'owner': 'o', 'name': 'r'}))

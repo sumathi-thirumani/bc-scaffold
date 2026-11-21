@@ -6,6 +6,8 @@ GitHub Actions workflow passes), then defaults:
     SECURITY_REMEDIATION_ECOSYSTEMS            comma-separated or "All", default: all supported
                                                (unknown names are logged and skipped)
     SECURITY_REMEDIATION_VERIFICATION_ENABLED  true/false, default: true
+    SECURITY_REMEDIATION_LLM_ENABLED           true/false, default: false (group with a local Ollama
+                                               model when the repository has no Renovate config)
     SECURITY_REMEDIATION_ADDITIONAL_UPDATES    true/false, default: false (also plan non-vulnerable
                                                updates found by the compatible-version review)
     SECURITY_REMEDIATION_ARTIFACT_OUTPUT       true/false, default: true (write remediation-plan.json
@@ -27,6 +29,7 @@ logger = logging.getLogger(__name__)
 ECOSYSTEMS_ENV = "SECURITY_REMEDIATION_ECOSYSTEMS"
 VERIFICATION_ENV = "SECURITY_REMEDIATION_VERIFICATION_ENABLED"
 TOKEN_ENV = "GITHUB_TOKEN"
+LLM_ENABLED_ENV = "SECURITY_REMEDIATION_LLM_ENABLED"
 ADDITIONAL_UPDATES_ENV = "SECURITY_REMEDIATION_ADDITIONAL_UPDATES"
 ARTIFACT_OUTPUT_ENV = "SECURITY_REMEDIATION_ARTIFACT_OUTPUT"
 REPOSITORY_ENV = "GITHUB_REPOSITORY"
@@ -97,6 +100,7 @@ class SecurityRemediationConfig:
     github_token: str = field(repr=False)
     ecosystems: frozenset[str] = SecurityRemediationConstants.SUPPORTED_ECOSYSTEMS
     verification_enabled: bool = True
+    llm_enabled: bool = False
     additional_updates: bool = False
     artifact_output: bool = True
     ref: str | None = None
@@ -116,6 +120,7 @@ class SecurityRemediationConfig:
         repo: str | None = None,
         ecosystems: str | list[str] | None = None,
         verification_enabled: bool | str | None = None,
+        llm_enabled: bool | str | None = None,
         additional_updates: bool | str | None = None,
         artifact_output: bool | str | None = None,
         ref: str | None = None,
@@ -148,6 +153,11 @@ class SecurityRemediationConfig:
                 verification_enabled if verification_enabled is not None else env.get(VERIFICATION_ENV),
                 True,
                 VERIFICATION_ENV,
+            ),
+            llm_enabled=parse_bool(
+                llm_enabled if llm_enabled is not None else env.get(LLM_ENABLED_ENV),
+                False,
+                LLM_ENABLED_ENV,
             ),
             additional_updates=parse_bool(
                 additional_updates if additional_updates is not None else env.get(ADDITIONAL_UPDATES_ENV),

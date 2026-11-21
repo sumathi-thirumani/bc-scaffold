@@ -8,14 +8,14 @@ from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
-from ..models.remediation_plan import RemeditionPackageBundle
-from ..models.security_package_triage import SecurityPackageTriage
-from ..tools.ecosystem_manifest_tool import DEFAULT_REF, RENOVATE_CONFIG_PATHS, ManifestTool
+from ...models.remediation_plan import RemeditionPackageBundle
+from ...models.security_package_triage import SecurityPackageTriage
+from ...tools.ecosystem_manifest_tool import DEFAULT_REF, RENOVATE_CONFIG_PATHS, ManifestTool
 
 logger = logging.getLogger(__name__)
 
 
-class RemediationGroupingEngine:
+class RenovateGroupingEngine:
     """Fetch Renovate config and group remediation packages using packageRules."""
 
     @staticmethod
@@ -71,7 +71,7 @@ class RemediationGroupingEngine:
         cleaned = raw_text.strip()
         if not cleaned:
             return {}
-        cleaned = RemediationGroupingEngine._strip_json5_comments(cleaned)
+        cleaned = RenovateGroupingEngine._strip_json5_comments(cleaned)
         cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
 
         try:
@@ -120,7 +120,7 @@ class RemediationGroupingEngine:
         default_group_name = "default"
 
         if isinstance(config, str):
-            config = RemediationGroupingEngine.parse_json5(config)
+            config = RenovateGroupingEngine.parse_json5(config)
 
         rules = config.get("packageRules", []) if isinstance(config, dict) else []
         if isinstance(config, dict) and config.get("extends"):
@@ -171,9 +171,9 @@ class RemediationGroupingEngine:
                 for rule in usable_rules:
                     values = {"matchPackageNames": name, "matchManagers": manager,
                               "matchDatasources": datasource,
-                              "matchUpdateTypes": RemediationGroupingEngine._update_type(current, target)}
+                              "matchUpdateTypes": RenovateGroupingEngine._update_type(current, target)}
                     try:
-                        matches = all(RemediationGroupingEngine._matches(values[key], rule[key])
+                        matches = all(RenovateGroupingEngine._matches(values[key], rule[key])
                                       for key in supported_matchers if key in rule)
                     except re.error:
                         logger.warning("Skipping Renovate grouping rule with unsupported/invalid regex")
@@ -223,7 +223,7 @@ class RemediationGroupingEngine:
 
             logger.info("Fetched renovate config content from %s/%s at path %s", owner, repo, path)
             try:
-                return RemediationGroupingEngine.parse_json5(content)
+                return RenovateGroupingEngine.parse_json5(content)
             except (ValueError, json.JSONDecodeError) as exc:
                 # Content was fetched successfully but isn't valid JSON5; this is a
                 # real config problem, not a "file not found" -- don't mask it by
@@ -243,9 +243,9 @@ class RemediationGroupingEngine:
         manifest_tool: ManifestTool | None = None,
     ) -> list[RemeditionPackageBundle] | None:
         """Fetch renovate.json5 from GitHub, then group packages by its packageRules."""
-        config = await RemediationGroupingEngine.fetch_renovate_config(
+        config = await RenovateGroupingEngine.fetch_renovate_config(
             owner, repo, ref, paths=paths, manifest_tool=manifest_tool
         )
         if config is None:
             return None
-        return RemediationGroupingEngine.group_packages_by_package_rules(packages, config)
+        return RenovateGroupingEngine.group_packages_by_package_rules(packages, config)

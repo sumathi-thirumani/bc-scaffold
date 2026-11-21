@@ -228,13 +228,13 @@ def test_hoisted_and_nested_versions_retain_declared_root_paths(monkeypatch):
     assert calls == [["yarn", "list", "--json"]]
 
 
-    from src.agents.remediation_planner_agent import RemediationPlannerAgent
+    from src.engines.grouping import UpgradeTargetBuilder
     from src.models.security_package_triage import SecurityPackageTriage
     finding = SecurityPackageTriage(package="picomatch", ecosystem="npm", istransitive=True,
         manifest_path="yarn.lock", vulnerablility_version_range="<2.3.2", vulnerablility_fixed_version="2.3.2")
     PackageRelationshipResolver._add_transitive_occurrences(
         finding, resolver.resolve("picomatch"), "yarn.lock", vulnerable_range="<2.3.2", fixed_version="2.3.2")
-    targets = RemediationPlannerAgent._build_upgrade_targets([finding])
+    targets = UpgradeTargetBuilder.build([finding])
     assert {t["package"] for t in targets} == {"react-scripts"}
     assert targets[0]["current_version"] == "5.0.1"
 

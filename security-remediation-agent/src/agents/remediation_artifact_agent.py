@@ -11,7 +11,7 @@ from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 
-from ..engines.remediation_grouping_engine import RemediationGroupingEngine
+from ..engines.grouping import RenovateGroupingEngine
 from ..models.plan_export import export_plan
 from ..models.remediation_plan import RemediationPlan
 from ..tools.ecosystem_manifest_tool import ManifestTool
@@ -74,7 +74,7 @@ class RemediationArtifactAgent:
         if self.manifest_tool is None:
             raise ValueError("A collected ManifestTool is required for remediation artifacts")
         ref = ref if ref is not None else repo.get("ref")
-        config = await RemediationGroupingEngine.fetch_renovate_config(
+        config = await RenovateGroupingEngine.fetch_renovate_config(
             owner, repository, ref, manifest_tool=self.manifest_tool.offline())
         config = config if config is not None else {}
         rules = config.get("packageRules", [])

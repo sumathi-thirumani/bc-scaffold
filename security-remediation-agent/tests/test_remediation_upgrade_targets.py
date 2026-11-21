@@ -2,6 +2,7 @@ import asyncio
 import pytest
 
 from src.agents.remediation_planner_agent import RemediationPlannerAgent
+from src.engines.grouping import UpgradeTargetBuilder
 from src.models.remediation_plan import RemediationPlan, RemeditionPackageBundle
 from src.models.security_package_triage import CandidatePackage, PackageUpgradeRecommendation, SecurityPackageTriage
 from src.models.security_remediation_context import SecurityRemediationContext
@@ -17,6 +18,7 @@ def test_planner_consolidates_shared_target_in_bundle():
     ) for child, versions in [("fast-uri", ["7.1.0", "7.2.0", "8.0.0"]),
                               ("undici", ["7.2.0", "8.0.0", "9.0.0"])]]
     plan = asyncio.run(RemediationPlannerAgent().plan(packages, SecurityRemediationContext()))
+    RemediationPlannerAgent.populate_upgrade_targets(plan)
     assert plan.remediation_plan_bundles[0].upgrade_targets == [{
         "package": "orval", "current_version": "7.0.0", "minimum_fixed_version": "7.2.0",
         "compatible_version": "7.2.0", "highest_fixed_version": "8.0.0",
@@ -24,7 +26,7 @@ def test_planner_consolidates_shared_target_in_bundle():
         "manifest_path": None, "is_update": False, "verification_status": None, "verification_notes": "",
         "verified_version": "",    }]
     packages[1].package_upgrade_recommendations[0].qualifying_upgrade_versions = []
-    targets = RemediationPlannerAgent._build_upgrade_targets(packages)
+    targets = UpgradeTargetBuilder.build(packages)
     assert len(targets) == 1
     assert targets[0]["minimum_fixed_version"] == "7.2.0"
 
@@ -38,12 +40,12 @@ def test_shared_target_uses_maximum_minimum_without_common_candidates():
         )],
     ) for child, versions in [("brace-expansion", ["7.9.0", "8.0.0"]),
                               ("minimatch", ["7.10.0", "9.0.0"])]]
-    targets = RemediationPlannerAgent._build_upgrade_targets(packages)
+    targets = UpgradeTargetBuilder.build(packages)
     assert len(targets) == 1
     assert targets[0]["minimum_fixed_version"] == "7.10.0"
     assert targets[0]["affected_packages"] == ["brace-expansion", "minimatch"]
     packages.reverse()
-    assert RemediationPlannerAgent._build_upgrade_targets(packages)[0]["minimum_fixed_version"] == "7.10.0"
+    assert UpgradeTargetBuilder.build(packages)[0]["minimum_fixed_version"] == "7.10.0"
 
 
 def test_direct_target_keeps_known_fix_without_verification():
@@ -51,7 +53,7 @@ def test_direct_target_keeps_known_fix_without_verification():
         package="minimatch", current_version="10.2.5", vulnerablility_version_range="<11.0.1",
         vulnerablility_fixed_version="11.0.1",
     )
-    targets = RemediationPlannerAgent._build_upgrade_targets([package])
+    targets = UpgradeTargetBuilder.build([package])
     assert targets[0]["minimum_fixed_version"] == "11.0.1"
 
 
@@ -75,7 +77,7 @@ def test_missing_parent_recommendation_has_separate_target_from_known_upgrade():
         )],
     )
     for packages in ([known, unresolved], [unresolved, known]):
-        targets = RemediationPlannerAgent._build_upgrade_targets(packages)
+        targets = UpgradeTargetBuilder.build(packages)
         assert len(targets) == 1
         upgrade = targets[0]
         assert upgrade == {
@@ -87,7 +89,7 @@ def test_missing_parent_recommendation_has_separate_target_from_known_upgrade():
     unresolved.package_upgrade_recommendations = [PackageUpgradeRecommendation(
         package="eslint", from_version="10.11.0",
     )]
-    assert len(RemediationPlannerAgent._build_upgrade_targets([known, unresolved])) == 1
+    assert len(UpgradeTargetBuilder.build([known, unresolved])) == 1
 
 
 def test_planner_refreshes_targets_after_compatible_version_review():
@@ -116,7 +118,7 @@ def test_transitive_child_fix_is_not_used_for_parent():
             package="child", version="1", introducers=[TransistiveSourcePackage(package="parent", version="5")],
         )],
     )
-    targets = RemediationPlannerAgent._build_upgrade_targets([package])
+    targets = UpgradeTargetBuilder.build([package])
     assert targets[0]["package"] == "parent"
     assert targets[0]["minimum_fixed_version"] == ""
 
@@ -132,7 +134,7 @@ def test_independent_manifests_keep_separate_parent_targets():
         ("child-a", "web/package.json", "1.1.0"),
         ("child-b", "admin/package.json", "1.2.0"),
     ]]
-    targets = RemediationPlannerAgent._build_upgrade_targets(packages)
+    targets = UpgradeTargetBuilder.build(packages)
     assert len(targets) == 2
     assert {target["manifest_path"]: (target["compatible_version"], target["affected_packages"])
             for target in targets} == {
@@ -143,7 +145,7 @@ def test_independent_manifests_keep_separate_parent_targets():
     packages[1].manifest_path = "web\\package.json"
     packages[1].package_upgrade_recommendations[0].qualifying_upgrade_versions = [
         CandidatePackage("parent", "1.1.0"), CandidatePackage("parent", "1.2.0")]
-    [merged] = RemediationPlannerAgent._build_upgrade_targets(packages)
+    [merged] = UpgradeTargetBuilder.build(packages)
     assert merged["manifest_path"] == "web/package.json"
     assert merged["affected_packages"] == ["child-a", "child-b"]
 
@@ -170,7 +172,7 @@ def test_shared_target_respects_every_compatibility_limit(limits, expected):
             package_upgrade_recommendations=[recommendation], compatible_versions={"parent": limit},
         ))
     for ordered_packages in (packages, list(reversed(packages))):
-        [target] = RemediationPlannerAgent._build_upgrade_targets(ordered_packages)
+        [target] = UpgradeTargetBuilder.build(ordered_packages)
         assert target["compatible_version"] == expected
         assert target["minimum_fixed_version"] == "1.2.0"
         assert target["highest_fixed_version"] == "1.3.0"
@@ -196,7 +198,7 @@ def test_identical_entries_always_validate_compatibility(count, reviewed, prefer
             vulnerablility_version_range="<2", vulnerablility_fixed_version="2",
             package_upgrade_recommendations=[recommendation], compatible_versions={"parent": preferred},
         ))
-    [target] = RemediationPlannerAgent._build_upgrade_targets(packages)
+    [target] = UpgradeTargetBuilder.build(packages)
     assert target["compatible_version"] == expected
     assert target["affected_packages"] == [f"child-{index}" for index in range(count)]
     assert "review_status" not in target
@@ -212,5 +214,5 @@ def test_unreviewed_defaults_do_not_cap_shared_candidates():
                 package="parent", from_version="1.0.0", qualifying_upgrade_versions=versions,
             )],
         ))
-    [target] = RemediationPlannerAgent._build_upgrade_targets(packages)
+    [target] = UpgradeTargetBuilder.build(packages)
     assert target["compatible_version"] == "1.2.0"

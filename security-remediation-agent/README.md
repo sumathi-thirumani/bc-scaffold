@@ -89,6 +89,7 @@ The CLI also accepts a GitHub repository URL for `--repo`. Logs go to stderr; th
 | `--ref` | `SECURITY_REMEDIATION_REF` | Repository default branch when omitted. |
 | `--ecosystems` | `SECURITY_REMEDIATION_ECOSYSTEMS` | All supported ecosystems; accepts comma-separated names or groups such as `python`, `npm`, and `dotnet`. |
 | `--verification-enabled true\|false` | `SECURITY_REMEDIATION_VERIFICATION_ENABLED` | `true`; run dependency resolution verification. |
+| `--llm-enabled true\|false` | `SECURITY_REMEDIATION_LLM_ENABLED` | `false`; when the repository has no Renovate config, group packages with a local Ollama model instead of the ecosystem/upgrade-type default. Falls back to the default if the model fails. |
 | `--additional-updates true\|false` | `SECURITY_REMEDIATION_ADDITIONAL_UPDATES` | `false`; include non-vulnerable updates found during review. |
 | `--artifact-output true\|false` | `SECURITY_REMEDIATION_ARTIFACT_OUTPUT` | `true`; write plan and Renovate files. |
 

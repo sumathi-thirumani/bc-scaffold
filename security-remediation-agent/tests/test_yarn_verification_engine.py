@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.agents.remediation_planner_agent import RemediationPlannerAgent
+from src.engines.grouping import UpgradeTargetBuilder
 from src.agents.remediation_verification_agent import RemediationVerificationAgent
 from src.engines.remediation_verification import yarn_verification_engine as yarn
 from src.engines.remediation_verification.verification_engine import ManifestFile
@@ -69,7 +70,7 @@ def test_unsupported_layouts_never_install_and_display_not_verified(monkeypatch,
     finding = SecurityPackageTriage(package="child", ecosystem="npm", istransitive=True,
         manifest_path="web/yarn.lock", vulnerablility_version_range="", vulnerablility_fixed_version="",
         package_upgrade_recommendations=[rec])
-    [target] = RemediationPlannerAgent._build_upgrade_targets([finding])
+    [target] = UpgradeTargetBuilder.build([finding])
     assert target["verification_status"] == "NOT VERIFIED"
 
 

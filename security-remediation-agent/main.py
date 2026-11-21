@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Any
 
 from src.agents.artifact_collector_agent import ArtifactCollectorAgent
+from src.agents.llm.grouping_recommendation_agent import GroupingRecommendationAgent
 from src.agents.remediation_planner_agent import RemediationPlannerAgent
 from src.agents.vulnerability_collector_agent import VulnerabilityCollectorAgent
 from src.agents.vulnerability_triage_agent import VulnerabilityTriageAgent
@@ -74,6 +75,8 @@ async def async_main() -> None:
     parser.add_argument("--ecosystems", help="Comma-separated ecosystems (env: SECURITY_REMEDIATION_ECOSYSTEMS).")
     parser.add_argument("--verification-enabled", choices=["true", "false"],
                         help="Verify proposed upgrades (env: SECURITY_REMEDIATION_VERIFICATION_ENABLED).")
+    parser.add_argument("--llm-enabled", choices=["true", "false"],
+                        help="Group with an Ollama model when there is no Renovate config (env: SECURITY_REMEDIATION_LLM_ENABLED).")
     parser.add_argument("--additional-updates", choices=["true", "false"],
                         help="Also plan non-vulnerable updates (env: SECURITY_REMEDIATION_ADDITIONAL_UPDATES).")
     parser.add_argument("--artifact-output", choices=["true", "false"],
@@ -87,6 +90,7 @@ async def async_main() -> None:
             ecosystems=args.ecosystems,
             ref=args.ref,
             verification_enabled=args.verification_enabled,
+            llm_enabled=args.llm_enabled,
             additional_updates=args.additional_updates,
             artifact_output=args.artifact_output,
         )
@@ -100,7 +104,10 @@ async def async_main() -> None:
     orchestrator = SecurityOrchestrator(
         VulnerabilityCollectorAgent(),
         VulnerabilityTriageAgent(manifest_tool=manifest_tool),
-        RemediationPlannerAgent(manifest_tool=manifest_tool),
+        RemediationPlannerAgent(
+            manifest_tool=manifest_tool,
+            grouping_recommendation_agent=GroupingRecommendationAgent() if config.llm_enabled else None,
+        ),
         artifactCollectorAgent=ArtifactCollectorAgent(manifest_tool=manifest_tool),
         ecosystems=config.ecosystems,
         verification_enabled=config.verification_enabled,

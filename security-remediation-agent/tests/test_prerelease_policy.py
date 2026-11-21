@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock
 from src.agents.remediation_artifact_agent import RemediationArtifactAgent
 from src.agents.remediation_planner_agent import RemediationPlannerAgent
+from src.engines.grouping import UpgradeTargetBuilder
 from src.engines.remediation_verification.verification_engine import ManifestFile, VerificationEngine
 from src.models.plan_export import export_plan
 from src.models.remediation_plan import RemediationPlan, RemeditionPackageBundle
@@ -32,7 +33,7 @@ def test_prerelease_fallback_flows_through_verification_and_rules_automatically(
         manifest_path="project.csproj", vulnerablility_version_range="<2", vulnerablility_fixed_version="2",
         package_upgrade_recommendations=[rec], verified_versions={"Parent": "1.1.0-beta"})
     plan = RemediationPlan([RemeditionPackageBundle("nuget", "group", "high", [triage])])
-    [target] = RemediationPlannerAgent._build_upgrade_targets([triage])
+    [target] = UpgradeTargetBuilder.build([triage])
     assert target["prerelease_fallback"]
     assert target["compatible_version"] == "1.1.0-beta"
     assert target["verification_status"] == "SUCCESS"

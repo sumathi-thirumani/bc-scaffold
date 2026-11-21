@@ -63,3 +63,9 @@ def test_ref_argument_overrides_environment():
                   owner='o', repo='r', ref='release')
     assert config.repository['ref'] == 'release'
     assert load({'GITHUB_TOKEN': 't', 'SECURITY_REMEDIATION_REF': 'develop'}, owner='o', repo='r').ref == 'develop'
+
+def test_llm_enabled_defaults_off_and_reads_environment():
+    assert load({"GITHUB_TOKEN": "t"}, owner="o", repo="r").llm_enabled is False
+    assert load({"GITHUB_TOKEN": "t", "SECURITY_REMEDIATION_LLM_ENABLED": "true"}, owner="o", repo="r").llm_enabled is True
+    assert load({"GITHUB_TOKEN": "t", "SECURITY_REMEDIATION_LLM_ENABLED": "true"},
+                owner="o", repo="r", llm_enabled="false").llm_enabled is False
